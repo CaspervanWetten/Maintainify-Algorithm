@@ -26,7 +26,7 @@ class Transformer():
     max_iters:      int     = 1200  
     embedding_dim:  int     = 384   
     patch_embedding: int    = 384 # Letterlijk het maximum totaal aantal tokens waar de trans context over onthoudt
-    n_head:        int     = 6     
+    n_head:        int      = 6     
     n_layer:        int     = 6     
     dropout:        float   = 0.3   
     # Training HP
@@ -42,13 +42,13 @@ class Transformer():
 
         # By far niet het mooiste, maar het werkt; op python 3.10+ had ik match-switch cases gebruikt
         if self.tokenizer.lower() == "text":
-            self.Tokenizer = TextTokenizer()
+            self.Tok = TextTokenizer()
         elif self.tokenizer.lower().endswith(".vocab"):
-            self.Tokenizer = TextTokenizer().load_model(self.tokenizer)
+            self.Tok = TextTokenizer().load_model(self.tokenizer)
         elif self.tokenizer.lower() == "audio":
-            self.Tokenizer = AudioTokenizer()
+            self.Tok = AudioTokenizer()
         elif self.tokenizer.lower().endswith(".aud"):
-            self.Tokenizer = AudioTokenizer().load_model(self.tokenizer)
+            self.Tok = AudioTokenizer().load_model(self.tokenizer)
         else:
             print("Tokenizer should either be a path to a pre-saved tokenizer, or a string indicating 'text' or 'audio'")
             raise NameError
@@ -108,13 +108,13 @@ class Transformer():
             raise NameError
         # Could be more Pythonic (literally just ask GPT) but this is nice and explicit :)
         if split == "train":
-            self.train_data = self.Tokenizer.load_data(path)
+            self.train_data = self.Tok.load_data(path)
         elif split == "val":
-            self.val_data = self.Tokenizer.load_data(path)
+            self.val_data = self.Tok.load_data(path)
         elif split == "test":
-            self.test_data = self.Tokenizer.load_data(path)
+            self.test_data = self.Tok.load_data(path)
         else:
-            all = self.Tokenizer.load_data(path)
+            all = self.Tok.load_data(path)
             size = all.size(0)
             self.train_data, self.val_data, self.test_data = all[:int(size*0.7)], all[int(size*0.7):int(size*0.9)], all[int(size*0.9):] # dus een 0-70, 70-90, 90-100 betekent een 70/20/10 split
 
@@ -174,6 +174,7 @@ class Transformer():
             return context.tolist()
 
         def forward(self, context, targets=None):
+            # Ik snap dit niet 
             """"
             Vereist een 2d tensor (voor nu)
             Moet voortaan vanuit de tokenizer komen 

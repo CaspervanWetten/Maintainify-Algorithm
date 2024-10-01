@@ -6,7 +6,7 @@ from Interface import Transformer
 
 data_folder = "Data"
 
-T = Transformer("audio")
+T = Transformer("audio", debug=True)
 # T.load_model("Models/test.pt")
 # T.load_data(data_folder)
 

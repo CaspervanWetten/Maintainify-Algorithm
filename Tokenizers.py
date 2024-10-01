@@ -3,10 +3,12 @@ import logging
 import torchaudio
 import torch.nn.functional as F
 import torchaudio.compliance.kaldi as ta_kaldi
+
+import librosa
 import os as os
+import matplotlib.pyplot as plt
 
 from typing import Optional
-
 from abc import ABC, abstractmethod
 from dataclasses import dataclass
 
@@ -87,8 +89,26 @@ class GenericTokenizer(ABC):
         return returnal
     
 
-
+@dataclass
 class AudioTokenizer(GenericTokenizer):
+    #TODO Hier moet je nog over nadenken
+    visualize: bool     = True
+    num_dictionary: int = 8    # SOMETHING -> Refers to the to the total amount of tokens, i.e. this is the initialization for the length of list of tokens (with their own context?)
+                                    # Moet er een verbinding zijn tussen deze parameter en de input? -> I.e. moet ik dit uit de input halen of kan k gwn 3 invullen 
+                                    # Verwachting H1: Relevanter nummer is beter, maar kan door bruteforcen achterkomen'
+    
+    patch_embedding:int = 60  # Het aantal 'frames' in een sound segment; denk aan de sampling rate; in relatie met lengte segmenten
+                                    # I.e, nu doen we dus 60 frames in elk segment van:
+    sound_length: int   = 1      # 1 seconden
+    n_mfcc: int         = 14        # number of MFCC features to extract (No I don't know what this means)
+    n_mels: int         = 128       # Number of mel bands for the mel-spectogram
+    n_fft: int          = 1024      # Number size of the FFT, determines the frequency resolution
+    hop_length: int     = 512       # Number of samples between frames
+    sample_rate: int    = 16000
+    max_length: int     = 1024     # Maximum sequence length for input tokens
+
+
+
     def __init__(self, **kwargs):
         super().__init__(**kwargs)
 
@@ -100,11 +120,53 @@ class AudioTokenizer(GenericTokenizer):
         Audio is Quantized (whatever that means)
         Batched?
         """
-        waveform, sample_rate = torchaudio.load(file_path)
-        print(waveform)
+        # Na het laden van de audio moet het dus sws eerst in een lijst per frames met x seconden gehakt worden
+        # Dit wordt dan opgehakt in kleine frames (*letter*lijk dit zijn tokens)
+        # uit de frames lezen we belangrijke data
+        # Dit is een tensor
+        # Daar wordt mee gerekend.
+
+        self.waveform, sample_rate = torchaudio.load(file_path) # Test 1: This is a very smallll tensor
+        
+        # Convert stereo to mono
+        if self.waveform.shape[0] > 1: 
+            self.waveform = torch.mean(self.waveform, dim=0, keepdim=True)
+        # Resample:
+        if sample_rate != self.sample_rate:
+            resampler = T.Resample(orig_freq=sample_rate, new_freq=self.sample_rate)
+            self.waveform = resampler(self.waveform)
+        
+        # Actual feature extraction:
+            # Normalize the waveform
+        self.waveform = self.waveform / torch.max(torch.abs(self.waveform))
+
+            # Mel spectogram
+        MS_transform = T.MelSpectrogram(sample_rate=self.sample_rate, n_fft=self.n_fft, hop_length=self.hop_length, n_mels=self.n_mels, normalized=True)
+        mel_spec = MS_transform(self.waveform)
+        self.debug(f"mel_spec after creation: {mel_spec}")
+            # Convert to decibel
+        db_mel_spec = T.AmplitudeToDB()(mel_spec)
+            # Normalize DB mel_spec
+        db_mel_spec_normalized = (db_mel_spec - db_mel_spec.mean()) / db_mel_spec.std()
+
+        self.debug(db_mel_spec_normalized)
+  
+    #    # MFCC
+    #     MFCC_transform = T.MFCC(sample_rate=self.sample_rate, n_mfcc=self.n_mfcc, melkwargs={
+    #         "n_fft": self.n_fft,
+    #         "hop_length": self.hop_length,
+    #         "n_mels": self.n_mels,
+    #         "center": True
+    #     })
+    #     mfcc = MFCC_transform(self.waveform)
+     
         # Print out the waveform shape and sample rate for confirmation
-        return waveform
-    
+        self.debug(f"min: {db_mel_spec_normalized.min()}")
+        self.debug(f" max: {db_mel_spec_normalized.max()}")
+        self.debug(f"mean: {db_mel_spec_normalized.mean()}")
+        self.debug(f"mel_spec after processing: {db_mel_spec_normalized}")
+        return db_mel_spec_normalized
+ 
     def load_data(self, path: str) -> torch.Tensor:
         """
         Reads the input (either a string containing text or a string pointing towards a file/folder) and returns a tensor
@@ -177,7 +239,36 @@ class AudioTokenizer(GenericTokenizer):
 
     def pad_input(self, input: torch.Tensor, length: 32, dims: 3) -> torch.Tensor:
         return super().pad_input(input, length, dims)
-
+    
+    def plot(self, waveform):
+        # Convert to numpy for visualization
+        features_np = waveform.squeeze().numpy()
+        
+        # Create a figure with two subplots
+        fig, (ax1, ax2) = plt.subplots(2, 1, figsize=(10, 8))
+        
+        # Plot mel spectrogram
+        img = librosa.display.specshow(
+            features_np,
+            y_axis='mel',
+            x_axis='time',
+            ax=ax1
+        )
+        ax1.set_title('Mel Spectrogram (normalized)')
+        fig.colorbar(img, ax=ax1, format='%+2.0f dB')
+        
+        # Plot a few mel frequency bands over time
+        times = np.arange(features_np.shape[1])
+        for i, band in enumerate([0, 20, 40, 60]):
+            if band < features_np.shape[0]:
+                ax2.plot(times, features_np[band], label=f'Mel Band {band}')
+        ax2.set_title('Selected Mel Bands Over Time')
+        ax2.set_xlabel('Time Frame')
+        ax2.set_ylabel('Normalized Amplitude')
+        ax2.legend()
+        
+        plt.tight_layout()
+        return plt
 
 
 class TextTokenizer (GenericTokenizer):
