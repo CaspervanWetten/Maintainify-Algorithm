@@ -41,6 +41,7 @@ class Transformer():
         self.debug = lambda s: self.logging.debug(f"\n{s}\n")
 
         # By far niet het mooiste, maar het werkt; op python 3.10+ had ik match-switch cases gebruikt
+        # LET: kan een file_path zijn naar een bestaande, of een indicator voor text of audio
         if self.tokenizer.lower() == "text":
             self.Tok = TextTokenizer()
         elif self.tokenizer.lower().endswith(".vocab"):
@@ -116,16 +117,28 @@ class Transformer():
         else:
             all = self.Tok.load_data(path)
             size = all.size(0)
-            self.train_data, self.val_data, self.test_data = all[:int(size*0.7)], all[int(size*0.7):int(size*0.9)], all[int(size*0.9):] # dus een 0-70, 70-90, 90-100 betekent een 70/20/10 split
+            self.train_data, self.val_data, self.test_data = all[:int(size*0.7)], all[int(size*0.7):int(size*0.9)], all[int(size*0.9):] # een 70/20/10 split
 
 
-    # Alias functions, shadow the model functionality without the need to call these directly, handles all the interfacing necessary for these .model functions
-    def generate(self, context=None, max_tokens=64):
+    # Alias functions, shadow the model functionality alias interfacing
+    def categorize(self, input, max_new_tokens):
         """
-        Alias for the model.generate; also handles interfacing (i.e., translating context to a tensor if it isn't already)
+        Alias for the model.categorize; also handles interfacing (i.e., translating categorize to a tensor if it isn't already)
         """
-        return self.model.generate(context, max_tokens)
-    
+
+        if input == None:
+                context = torch.zeros((1, 1), dtype=torch.long)
+        if not isinstance(context, torch.Tensor):
+                raise NameError
+        self.debug(f"{type(context)} encoded Context: {len(context)} ; {context}")
+        for _ in range(max_new_tokens):
+                print(f"Currently generating token {_ + 1}")
+                # crop context to the last block_size tokens
+                context_cond = context[:, -self.block_size:]
+                
+
+
+        return self.model.categorize(input)
     def categorize(self, input):
         """
         Alias for the model.categorize; also handles interfacing (i.e., translating categorize to a tensor if it isn't already)
@@ -136,9 +149,7 @@ class Transformer():
         def __init__(self, Transformer: "Transformer") -> None:
             super().__init__()
             self.Transformer = Transformer
-            #-----------------
-            # TODO Sloop de Tokenizer uit het model en bouw het in de interface
-            # Each token directly reads off the logits for the next token from a lookup table (which lookup table?)
+             # Each token directly reads off the logits for the next token from a lookup table (which lookup table?)
             self.token_embedding_dimmingtable = nn.Embedding(self.Transformer.patch_embedding, self.Transformer.embedding_dim)
 
             """Note that the sequence they appear is also the sequence they are used"""
@@ -152,26 +163,16 @@ class Transformer():
             # .Embedding creates a shape of vocab_size x vocab_size
             # De inputs voor de transformer zoeken in de tensor rij en plukken de Xte (X=tokenized input integer) rij uit de lookup table
 
-        def generate(self, context=None, max_new_tokens=64):
-            if context == None:
-                context = torch.zeros((1, 1), dtype=torch.long)
-
-            if not isinstance(context, torch.Tensor):
-                raise NameError
-            
-            self.Transformer.debug(f"{type(context)} encoded Context: {len(context)} ; {context}")
-            #   context is (B,T) array of indices
-            for _ in range(max_new_tokens):
-                print(f"Currently generating token {_ + 1}")
-                # crop context to the last block_size tokens
-                context_cond = context[:, -self.Transformer.block_size:]
-                self.Transformer.debug(context_cond)
-                logits, loss = self(context_cond) # Does the prediction 
-                logits = logits[:, -1, :] # Foxus only the last time step, (B,C), de -1 skipt de T dimensie
-                probs = F.softmax(logits, dim=-1) # apply softmax to get probabilities, ook (B,C)
-                context_next = torch.multinomial(probs, num_samples=1) # Sample from the distributino by flattening it, (B, 1)
-                context = torch.cat((context, context_next), dim=1) # ( Append sampled index to the running sequence) (B, T+1)
-            return context.tolist()
+        def generate(self, context: torch.Tensor):
+            """"
+            Generates  óne (1) token
+            """
+            the_entire_tensor, expected_error = self(context) # Does the prediction 
+            newest_math = the_entire_tensor[:, -1, :] # Foxus only the last time step, (B,C), de -1 skipt de T dimensie
+            prob_new_token = F.softmax(newest_math, dim=-1) # apply softmax to get probabilities, ook (B,C)
+            new_token = torch.multinomial(prob_new_token, num_samples=1) # Sample from the distributino by flattening it, (B, 1)
+            context_wnew_token = torch.cat((context, new_token), dim=1) # ( Append sampled index to the running sequence) (B, T+1)
+            return context_wnew_token
 
         def forward(self, context, targets=None):
             # Ik snap dit niet 
