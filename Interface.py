@@ -87,7 +87,6 @@ class Transformer():
             loss.backward()
             self.optimizer.step()
 
-
     @torch.no_grad() # A context manager (?) to tell PyTorch to not make these backwards callable, e.g. skip back propagation
     def estimate_loss(self):
         out = {}
@@ -119,31 +118,61 @@ class Transformer():
             size = all.size(0)
             self.train_data, self.val_data, self.test_data = all[:int(size*0.7)], all[int(size*0.7):int(size*0.9)], all[int(size*0.9):] # een 70/20/10 split
 
-
     # Alias functions, shadow the model functionality alias interfacing
-    def categorize(self, input, max_new_tokens):
+    def generate(self, input=None, max_new_tokens=64):
         """
-        Alias for the model.categorize; also handles interfacing (i.e., translating categorize to a tensor if it isn't already)
+        Alias for the model.categorize; also handles interfacing (i.e., translating input to a tensor if it isn't already)
         """
-
         if input == None:
                 context = torch.zeros((1, 1), dtype=torch.long)
         if not isinstance(context, torch.Tensor):
                 raise NameError
-        self.debug(f"{type(context)} encoded Context: {len(context)} ; {context}")
-        for _ in range(max_new_tokens):
-                print(f"Currently generating token {_ + 1}")
-                # crop context to the last block_size tokens
-                context_cond = context[:, -self.block_size:]
-                
+        self.debug(f"encoded Context: {len(context)} ; {context}")
+            
 
+        batches = self.batch(context)
+        for batch in batches:
+            if context.size(1) < self.block_size:
+                self.pad(context)
+                for _ in range(max_new_tokens):
+                    print(f"Currently generating token {_ + 1}")
+                    # crop context to the last block_size tokens
+                    cropped_context = context[:, -self.block_size:]
+                    context_wnew_token = torch.cat((context, self.model.generate(cropped_context, self.block_size)), dim=1) # ( Append sampled index to the running sequence) (B, T+1)
+                    context = context_wnew_token # Reassign context to context_wnew_token to ensure the new tokens are taken into consideration for continous generation
+        return context
 
-        return self.model.categorize(input)
     def categorize(self, input):
         """
         Alias for the model.categorize; also handles interfacing (i.e., translating categorize to a tensor if it isn't already)
         """
         return self.model.categorize(input)
+
+    def pad(self, to_pad):
+        padding_size = self.block_size - to_pad.size(0)
+        padded_tensor = torch.ca(to_pad, torch.zeros(to_pad.size(0)), dim=1)
+        return padded_tensor
+
+    def batch(self, context):
+        # Claude:
+        batches = []
+        for a_token_in_context in range(0, len(context) - self.block_size + 1, self.block_size // 2):
+            end = start + self.block_size
+            batch = a_token_in_context[:, start:end]
+            batches.append(batch)
+        return batches
+
+        #Mijn:
+        batches = []
+        # # van 
+        # for token in range(0, self.batch_size, to_batch // self.batch_size):
+        #     batch_length = token + self.batch_size
+        #     batch = to_batch[:, ]
+        #     batch.append(batches)
+        
+
+
+
 
     class Model(nn.Module):
         def __init__(self, Transformer: "Transformer") -> None:
@@ -163,16 +192,15 @@ class Transformer():
             # .Embedding creates a shape of vocab_size x vocab_size
             # De inputs voor de transformer zoeken in de tensor rij en plukken de Xte (X=tokenized input integer) rij uit de lookup table
 
-        def generate(self, context: torch.Tensor):
+        def generate(self, context: torch.Tensor, slice: int=1):
             """"
             Generates  óne (1) token
             """
             the_entire_tensor, expected_error = self(context) # Does the prediction 
-            newest_math = the_entire_tensor[:, -1, :] # Foxus only the last time step, (B,C), de -1 skipt de T dimensie
+            newest_math = the_entire_tensor[:, -slice, :] # Foxus only the last time step, (B,C), de -1 skipt de T dimensie
             prob_new_token = F.softmax(newest_math, dim=-1) # apply softmax to get probabilities, ook (B,C)
             new_token = torch.multinomial(prob_new_token, num_samples=1) # Sample from the distributino by flattening it, (B, 1)
-            context_wnew_token = torch.cat((context, new_token), dim=1) # ( Append sampled index to the running sequence) (B, T+1)
-            return context_wnew_token
+            return new_token
 
         def forward(self, context, targets=None):
             # Ik snap dit niet 
@@ -275,6 +303,11 @@ class Transformer():
 
 
 
-if __name__ == "__main__":
+if __name__ == "__main__": batches = []
+        for start in range(0, sequence_length - self.block_size + 1, self.block_size // 2):
+            end = start + self.block_size
+            batch = context[:, start:end]
+            batches.append(batch)
+        
     # For testing purposes
     pass

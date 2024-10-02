@@ -5,7 +5,7 @@ from Interface import Transformer
 
 
 data_folder = "Data"
-
+transformer = "folder_path/tokenizer.vocab"
 T = Transformer("audio", debug=True)
 # T.load_model("Models/test.pt")
 # T.load_data(data_folder)
