@@ -47,7 +47,7 @@ class Transformer():
         elif self.tokenizer.lower().endswith(".vocab"):
             self.Tok = TextTokenizer().load_model(self.tokenizer)
         elif self.tokenizer.lower() == "audio":
-            self.Tok = AudioTokenizer()
+            self.Tok = AudioTokenizer(debug = False)
         elif self.tokenizer.lower().endswith(".aud"):
             self.Tok = AudioTokenizer().load_model(self.tokenizer)
         else:
@@ -102,10 +102,12 @@ class Transformer():
         return out
 
     def load_data(self, path, split=None) -> None:
-        possible = [None, "train", "val", "test"]
+        possible = [None, "train", "val", "test", "generate"] 
         if split not in possible:
             print(f"split is not one of {possible}")
             raise NameError
+        if split == "generate":
+            return self.Tok.load_data(path)
         # Could be more Pythonic (literally just ask GPT) but this is nice and explicit :)
         if split == "train":
             self.train_data = self.Tok.load_data(path)
@@ -118,28 +120,36 @@ class Transformer():
             size = all.size(0)
             self.train_data, self.val_data, self.test_data = all[:int(size*0.7)], all[int(size*0.7):int(size*0.9)], all[int(size*0.9):] # een 70/20/10 split
 
+
+
     # Alias functions, shadow the model functionality alias interfacing
     def generate(self, input=None, max_new_tokens=64):
         """
         Alias for the model.categorize; also handles interfacing (i.e., translating input to a tensor if it isn't already)
         """
         if input == None:
-                context = torch.zeros((1, 1), dtype=torch.long)
-        if not isinstance(context, torch.Tensor):
-                raise NameError
-        self.debug(f"encoded Context: {len(context)} ; {context}")
+                input = torch.zeros((9, 9), dtype=torch.long)
+        if not isinstance(input, torch.Tensor):
+                input = self.load_data(input, "generate")
+                self.debug(f"Input: {input}")
+        self.debug(input)
+        self.debug(max_new_tokens)
+        self.debug(f"encoded Input: {len(input)} ; {input}")
             
-
-        batches = self.batch(context)
-        for batch in batches:
-            if context.size(1) < self.block_size:
-                self.pad(context)
-                for _ in range(max_new_tokens):
-                    print(f"Currently generating token {_ + 1}")
-                    # crop context to the last block_size tokens
-                    cropped_context = context[:, -self.block_size:]
-                    context_wnew_token = torch.cat((context, self.model.generate(cropped_context, self.block_size)), dim=1) # ( Append sampled index to the running sequence) (B, T+1)
-                    context = context_wnew_token # Reassign context to context_wnew_token to ensure the new tokens are taken into consideration for continous generation
+        if input.size(0) > self.block_size:
+            input = self.batch(input)
+        
+        self.debug(f"Batch: {input}")
+        for batch in input:
+            if batch.size(0) < self.block_size:
+                self.pad(batch)
+            for _ in range(max_new_tokens):
+                print("x")
+                self.debug(f"Currently generating token {_ + 1}")
+                # crop context to the last block_size tokens
+                # cropped_context = batch[:, -self.block_size:]
+                context_wnew_token = torch.cat((input, self.model.generate(batch, self.block_size)), dim=1) # ( Append sampled index to the running sequence) (B, T+1)
+                context = context_wnew_token # Reassign context to context_wnew_token to ensure the new tokens are taken into consideration for continous generation
         return context
 
     def categorize(self, input):
@@ -149,6 +159,7 @@ class Transformer():
         return self.model.categorize(input)
 
     def pad(self, to_pad):
+        self.debug(f"padding: \n{to_pad}")
         padding_size = self.block_size - to_pad.size(0)
         padded_tensor = torch.ca(to_pad, torch.zeros(to_pad.size(0)), dim=1)
         return padded_tensor
@@ -156,10 +167,12 @@ class Transformer():
     def batch(self, context):
         # Claude:
         batches = []
-        for a_token_in_context in range(0, len(context) - self.block_size + 1, self.block_size // 2):
+        self.debug("wft")
+        for start in range(0, len(context) - self.block_size + 1, self.block_size // 2):
             end = start + self.block_size
-            batch = a_token_in_context[:, start:end]
+            batch = context[:, start:end]
             batches.append(batch)
+            self.debug(f"es: {batches}")
         return batches
 
         #Mijn:
@@ -303,11 +316,12 @@ class Transformer():
 
 
 
-if __name__ == "__main__": batches = []
-        for start in range(0, sequence_length - self.block_size + 1, self.block_size // 2):
-            end = start + self.block_size
-            batch = context[:, start:end]
-            batches.append(batch)
-        
+if __name__ == "__main__": 
+    # batches = []
+    # for start in range(0, sequence_length - self.block_size + 1, self.block_size // 2):
+    #     end = start + self.block_size
+    #     batch = context[:, start:end]
+    #     batches.append(batch)
+    
     # For testing purposes
     pass

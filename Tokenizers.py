@@ -2,6 +2,7 @@ import torch
 import logging
 import torchaudio
 import torch.nn.functional as F
+import torchaudio.transforms as T
 import torchaudio.compliance.kaldi as ta_kaldi
 
 import librosa
@@ -173,9 +174,10 @@ class AudioTokenizer(GenericTokenizer):
         If an empty dir is presented, returns a 3x3 tensor of 0s
         """
         if os.path.isfile(path):
+            print("x")
             return self.encode(path)
         if os.path.isdir(path):
-            to_concat = [self.encode(os.path.join(file, path)) for file in os.listdir(path)]
+            to_concat = [self.encode(os.path.join(path, file)) for file in os.listdir(path)]
             if to_concat == []:
                 return torch.zeros((3, 3), dtype=torch.long)
             return torch.cat(to_concat)

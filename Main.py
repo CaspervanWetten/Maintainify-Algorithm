@@ -10,5 +10,5 @@ T = Transformer("audio", debug=True)
 # T.load_model("Models/test.pt")
 # T.load_data(data_folder)
 
-print(T)
-print(T.generate())
+# print(T)
+print(f"generated: {T.generate(data_folder)}")
