@@ -7,11 +7,14 @@ import torchaudio.compliance.kaldi as ta_kaldi
 
 import librosa
 import os as os
+import numpy as np
 import matplotlib.pyplot as plt
 
-from typing import Optional
 from abc import ABC, abstractmethod
+from typing import Optional
 from dataclasses import dataclass
+from collections import defaultdict
+
 
 
 
@@ -94,7 +97,7 @@ class GenericTokenizer(ABC):
 class AudioTokenizer(GenericTokenizer):
     #TODO Hier moet je nog over nadenken
     visualize: bool     = True
-    num_dictionary: int = 8    # SOMETHING -> Refers to the to the total amount of tokens, i.e. this is the initialization for the length of list of tokens (with their own context?)
+    vocab: int          = 512    # SOMETHING -> Refers to the to the total amount of tokens, i.e. this is the initialization for the length of list of tokens (with their own context?)
                                     # Moet er een verbinding zijn tussen deze parameter en de input? -> I.e. moet ik dit uit de input halen of kan k gwn 3 invullen 
                                     # Verwachting H1: Relevanter nummer is beter, maar kan door bruteforcen achterkomen'
     
@@ -200,41 +203,126 @@ class AudioTokenizer(GenericTokenizer):
             fbank = (fbank - fbank_mean) / (2 * fbank_std)
             return fbank 
     
-    def extract_features(self, source: torch.Tensor, padding_mask: Optional[torch.Tensor] = None, fbank_mean: float = 15.41663, fbank_std: float = 6.55582,
-    ):
-        fbank = self.preprocess(source, fbank_mean=fbank_mean, fbank_std=fbank_std)
-        if padding_mask is not None:
-            padding_mask = self.forward_padding_mask(fbank, padding_mask)
+    def quantize_features(self, mel_spec, n_bits=8):
+        min_val = np.min(mel_spec)
+        max_val = np.max(mel_spec)
+        
+        quantized = np.round((mel_spec - min_val) / (max_val - min_val) * (2**n_bits - 1))
+        return quantized.astype(np.uint8)
 
-        fbank = fbank.unsqueeze(1)
-        features = self.patch_embedding(fbank)
-        features = features.reshape(features.shape[0], features.shape[1], -1)
-        features = features.transpose(1, 2)
-        features = self.layer_norm(features)
-        if padding_mask is not None:
-            padding_mask = self.forward_padding_mask(features, padding_mask)
-        if self.post_extract_proj is not None:
-            features = self.post_extract_proj(features)
+    def get_byte_pairs(self, quantized_data):
 
-        x = self.dropout_input(features)
-        x, layer_results = self.encoder(x, padding_mask=padding_mask,)
+        pairs = defaultdict(int)
+        for row in quantized_data:
+            for i in range(len(row) - 1):
+                pair = (int(row[i]), int(row[i + 1]))
+                pairs[pair] += 1
+        return pairs
 
-        if self.predictor is not None:
-            x = self.predictor_dropout(x)
-            logits = self.predictor(x)
+    def merge_most_common(self, data, pair_to_merge, new_token):
+        new_data = []
+        for row in data:
+            i = 0
+            new_row = []
+            while i < len(row):
+                if i < len(row) - 1 and (row[i], row[i + 1]) == pair_to_merge:
+                    new_row.append(new_token)
+                    i += 2
+                else:
+                    new_row.append(row[i])
+                    i += 1
+            new_data.append(new_row)
+        return new_data
 
-            if padding_mask is not None and padding_mask.any():
-                logits[padding_mask] = 0
-                logits = logits.sum(dim=1)
-                logits = logits / (~padding_mask).sum(dim=1).unsqueeze(-1).expand_as(logits)
-            else:
-                logits = logits.mean(dim=1)
+    # def byte_pair_encoding(quantized_data, n_merges): #n_merges is the amount of individual samples we're
+    #     vocab = {i: i for i in range(256)}
+    #     next_token = 256
+    #     data = [list(row) for row in quantized_data]
+    #     merges = {}
+        
+    #     for i in range(n_merges):
+    def byte_pair_encoding(self, quantized_data, sample_rate: int): #n_merges is the amount of individual samples we're using; INCREASE THIS
+        vocab = custom_tokens(sample_rate) # Initialize a vocab dict the length of sample rate
+        data = [list(row) for row in quantized_data]
+        token_n = sample_rate
+        merges = {}
+        
+        for i in range(sample_rate): # Voor elke mogelijke waarde in vocab
+            pairs = get_byte_pairs(np.array(data, dtype='object'))
+            if not pairs:
+                break
+                
+            most_common = max(pairs.items(), key=lambda x: x[1])[0]
+            merges[most_common] = token_n # We gebruiken sample rate omdat dat exact de volgende stap is. 
+            # in BPE, i.e. ((token_a, token_b): token_n)
+            vocab[token_n] = most_common
+            
+            data = merge_most_common(data, most_common, token_n)
+            token_n += 1
+        
+        return data, {'vocab': vocab, 'merges': merges}
 
-            lprobs = torch.sigmoid(logits)
+    def extract_audio_features(self, file_path):
+        sample_rate = 1500
+        n_mels = 128
+        n_fft = 1024
+        hop_length = 512 
+        n_merges=64 # Bepaalt dit hoeveel individuele tokens er zijn?
 
-            return lprobs, padding_mask
-        else:
-            return x, padding_mask
+        waveform, or_sample_rate = torchaudio.load(file_path,) 
+        num_tokens = waveform.size(1)  # Assuming waveform shape is (channels, time-steps)
+        # Convert stereo to mono
+        if waveform.shape[0] > 1: 
+            waveform = torch.mean(waveform, dim=0, keepdim=True)
+        if or_sample_rate != sample_rate:
+            resampler = T.Resample(orig_freq=or_sample_rate, new_freq=sample_rate)
+            waveform = resampler(waveform)
+        waveform = waveform / torch.max(torch.abs(waveform)) # Ik vraag me af of dit waarde heeft
+        MS_transform = T.MelSpectrogram(sample_rate=sample_rate, n_fft=n_fft, hop_length=hop_length, n_mels=n_mels)
+        mel_spec = MS_transform(waveform)
+        mel_spec = mel_spec.squeeze().transpose(0, 1).numpy()
+        print(f"transposed and numpyfied: {mel_spec}")
+        # Reshapes to a 2d array, I don't know what it was though
+        mel_spec = mel_spec.reshape(-1, n_mels)
+        print(f"reshaped: {mel_spec}")
+
+        quantized_data = quantize_features(mel_spec)
+        print(f"quantized: {quantized_data}")
+        encoded_data, bpe_info = byte_pair_encoding(quantized_data, n_merges)
+        
+
+        # mel_spec = torch.flatten(mel_spec, start_dim=0, end_dim=1)
+        # long_spec = float_to_long_tensor(mel_spec)
+
+        return encoded_data, num_tokens, bpe_info
+
+
+    # Dict[str, Union[List[int], np.ndarray]]
+    def custom_tokens(self, sample_rate):
+        custom_tokens = {
+            "dog": "dog",
+            "cat": "cat",
+            "elephant": "elephant",
+        } # DIt wordt een json 
+        token_to_pattern = {}
+        pattern_to_token = {}
+        vocab = {}
+        next_token = 0
+        # Initialize with base vocabulary
+        
+        # Add custom tokens 
+        for token_name, pattern in custom_tokens.items():
+            pattern_tuple = tuple(pattern)
+            token_to_pattern[next_token] = pattern_tuple
+            pattern_to_token[pattern_tuple] = next_token
+            vocab[next_token] = pattern_tuple
+            next_token += 1
+        print(vocab)
+        # Vocab is the initial bpe dict
+        vocab = {i: i+next_token for i in range(sample_rate)}
+        print(f"i:i+{vocab}")
+        return vocab
+
 
     def forward_padding_mask(self, generic_tensor: torch.Tensor, padding_mask: torch.Tensor) -> torch.Tensor:
         return super().forward_padding_mask(generic_tensor, padding_mask)
