@@ -132,24 +132,18 @@ class Transformer():
         if not isinstance(input, torch.Tensor):
                 input = self.load_data(input, "generate")
                 self.debug(f"Input: {input}")
-        self.debug(input)
-        self.debug(max_new_tokens)
-        self.debug(f"encoded Input: {len(input)} ; {input}")
-            
+        self.debug(input)            
         if input.size(0) > self.block_size:
             input = self.batch(input)
         
         self.debug(f"Batch: {input}")
-        for batch in input:
-            if batch.size(0) < self.block_size:
-                self.pad(batch)
-            for _ in range(max_new_tokens):
-                print("x")
-                self.debug(f"Currently generating token {_ + 1}")
-                # crop context to the last block_size tokens
-                # cropped_context = batch[:, -self.block_size:]
-                context_wnew_token = torch.cat((input, self.model.generate(batch, self.block_size)), dim=1) # ( Append sampled index to the running sequence) (B, T+1)
-                context = context_wnew_token # Reassign context to context_wnew_token to ensure the new tokens are taken into consideration for continous generation
+        for _ in range(max_new_tokens):
+            print("x")
+            self.debug(f"Currently generating token {_ + 1}")
+            # crop context to the last block_size tokens
+            # cropped_context = batch[:, -self.block_size:]
+            context_wnew_token = torch.cat((input, self.model.generate(batch, self.block_size)), dim=1) # ( Append sampled index to the running sequence) (B, T+1)
+            context = context_wnew_token # Reassign context to context_wnew_token to ensure the new tokens are taken into consideration for continous generation
         return context
 
     def categorize(self, input):
