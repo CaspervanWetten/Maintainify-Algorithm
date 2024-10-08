@@ -1,3 +1,4 @@
+import random
 import logging
 import torch
 import torch.nn as nn
@@ -7,6 +8,7 @@ from torch.nn import functional as F
 from time import sleep
 from Tokenizers import AudioTokenizer, TextTokenizer
 from dataclasses import dataclass
+from helpers import *
 
 @dataclass
 class Transformer():
@@ -26,12 +28,13 @@ class Transformer():
     max_iters:      int     = 1200  
     embedding_dim:  int     = 384   
     patch_embedding: int    = 384 # Letterlijk het maximum totaal aantal tokens waar de trans context over onthoudt
-    n_head:        int      = 6     
+    n_head:         int     = 6     
     n_layer:        int     = 6     
     dropout:        float   = 0.3   
     # Training HP
     eval_interval:  int     = 300   
     learning_rate:  float   = 1e-3  
+    
 
     
 
@@ -56,6 +59,7 @@ class Transformer():
         
         # Model initialization: TODO make this better lol
         self.model = self.Model(self)
+        self.optimizer = torch.optim.AdamW(self.model.parameters(), lr=self.learning_rate)
 
         pass
 
@@ -81,11 +85,32 @@ class Transformer():
                 losses = self.estimate_loss()
                 print(losses)
                 print(f"step {iter}: train loss {losses['train']:.4f}, validation loss {losses['val']:.4f}")
-            xb, yb = self.model._get_batch(split="train")
-            logits, loss = self.model(xb, yb)
-            self.optimizer.zero_grad(set_to_none=True)
-            loss.backward()
-            self.optimizer.step()
+
+            train_batches = self.batch(self.train_data)
+            for batch in train_batches:
+                logits, loss = self.model(batch)
+                self.optimizer.zero_grad(set_to_none=True)
+                loss.backward()
+                self.optimizer.step()
+
+    def optimize_categorize(self):
+        self.debug("Start categorization optimizaiton")
+        for iter in range(self.max_iters):
+            if iter % self.eval_interval == 0:
+                metrics = self.estimate_categorization_loss()
+                self.debug(f"step: {iter}")
+                self.debug(f"train loss: {metrics['train_loss']:.4f}, accuracy {metrics['train_accuracy']:.4f}")
+                self.debug(f"train loss: {metrics['val_loss']:.4f}, accuracy {metrics['val_accuracy']:.4f}")
+            labels = list(self.train_data.keys())
+            label = random.choice(labels)
+            tensors = self.train_data[label]
+            train_batches = self.batch(tensors)
+            for batch in train_batches:
+                logits, loss = self.model(batch)
+                self.optimizer.zero_grad(set_to_none=True)
+                loss.backward()
+                self.optimizer.step()
+
 
     @torch.no_grad() # A context manager (?) to tell PyTorch to not make these backwards callable, e.g. skip back propagation
     def estimate_loss(self):
@@ -101,14 +126,43 @@ class Transformer():
         self.model.train() # Set the model to training mode
         return out
 
+    @torch.no_grad()
+    def estimate_categorization_loss(self):
+        out = {}
+        self.model.eval()
+
+        for split in ['train', 'val']:
+            losses = torch.zeros(self.eval_interval)
+            accuracies = torch.zeros(self.eval_interval)
+            data_dict = self.train_data if split == "train" else self.val_data
+            iter_count = 0
+
+            for label, tensors in data_dict.items():
+                # Figure out a way for the label to also be a tensor
+                batches = self.batch(tensors)
+                for batch in batches:
+                    logits, loss = self.model(batch, label)
+                    predictions = logits.argmax(dim=1)
+                    accuracy = (predictions == label).float().mean()
+                    losses[iter_count] = loss.item()
+                    accuracies[iter_count] = accuracy.item()
+                    iter_count += 1
+
+                    if iter_count > self.eval_interval:
+                        break
+                out[f'{split}_loss'] = losses.mean()
+                out[f'{split}_accuracy'] = accuracies.mean()
+        self.model.train()
+        return out
+
     def load_data(self, path, split=None) -> None:
         possible = [None, "train", "val", "test", "generate"] 
         if split not in possible:
             print(f"split is not one of {possible}")
             raise NameError
+        # Could be more Pythonic (literally just ask GPT) but this is nice and explicit :)
         if split == "generate":
             return self.Tok.load_data(path)
-        # Could be more Pythonic (literally just ask GPT) but this is nice and explicit :)
         if split == "train":
             self.train_data = self.Tok.load_data(path)
         elif split == "val":
@@ -127,30 +181,37 @@ class Transformer():
         """
         Alias for the model.categorize; also handles interfacing (i.e., translating input to a tensor if it isn't already)
         """
-        if input == None:
-                input = torch.zeros((9, 9), dtype=torch.long)
-        if not isinstance(input, torch.Tensor):
-                input = self.load_data(input, "generate")
-                self.debug(f"Input: {input}")
-        self.debug(input)
-        self.debug(max_new_tokens)
-        self.debug(f"encoded Input: {len(input)} ; {input}")
+        # if input == None:
+        #         input = torch.zeros((9, 9), dtype=torch.long)
+        # if not isinstance(input, torch.Tensor):
+        #         input = self.load_data(input, "generate")
+        #         self.debug(f"encoding input")
+        # self.debug(f"encoded Input: {len(input)} ; {input}")
             
-        if input.size(0) > self.block_size:
-            input = self.batch(input)
-        
-        self.debug(f"Batch: {input}")
-        for batch in input:
-            if batch.size(0) < self.block_size:
-                self.pad(batch)
-            for _ in range(max_new_tokens):
-                print("x")
-                self.debug(f"Currently generating token {_ + 1}")
-                # crop context to the last block_size tokens
-                # cropped_context = batch[:, -self.block_size:]
-                context_wnew_token = torch.cat((input, self.model.generate(batch, self.block_size)), dim=1) # ( Append sampled index to the running sequence) (B, T+1)
-                context = context_wnew_token # Reassign context to context_wnew_token to ensure the new tokens are taken into consideration for continous generation
-        return context
+        # self.debug(f"input size(0): {input.size(0)}")
+        # if input.size(1) > self.block_size:
+        #     self.debug(f"batching input")
+        #     input = self.batch(input)
+        text = get_input("Wouter")
+        chars = sorted(list(set(text)))
+        vocab_size = len(chars)
+        stringtoint = { ch:i for i,ch in enumerate(chars) } # {"A":0, "B":1, ..., "!": 80}
+        inttostring= { i:ch for i,ch in enumerate(chars) } # {0:"A", 1:"B", ..., 80:"!"}
+        self._bencode = lambda s: [stringtoint[c] for c in s] # backup encoding algo
+        self._bdecode = lambda l: ''.join([inttostring[i] for i in l]) # backup decoding algo
+        self.distinct_tokens = chars
+        self.num_distinct_tokens = vocab_size
+
+        encoded = torch.tensor(self._bencode(input), dtype=torch.long)
+        batches = self.batch(encoded)
+        for _ in range(max_new_tokens):
+            self.debug(f"Currently generating token {_ + 1}")
+            # crop context to the last block_size tokens
+            # cropped_context = batch[:, -self.block_size:]
+            generated = self.model.generate(batches)
+            # context_wnew_token = torch.cat((input, self.model.generate(batch, self.block_size)), dim=1) # ( Append sampled index to the running sequence) (B, T+1)
+            batches = torch.cat((batches, generated), dim=1) # Reassign context to context_wnew_token to ensure the new tokens are taken into consideration for continous generation
+        return batches
 
     def categorize(self, input):
         """
@@ -158,22 +219,37 @@ class Transformer():
         """
         return self.model.categorize(input)
 
-    def pad(self, to_pad):
-        self.debug(f"padding: \n{to_pad}")
-        padding_size = self.block_size - to_pad.size(0)
-        padded_tensor = torch.ca(to_pad, torch.zeros(to_pad.size(0)), dim=1)
+    def pad(self, tensor_to_pad):
+        self.debug(f"padding: \n{tensor_to_pad}")
+        self.debug(f"Lengte van: \n{len(tensor_to_pad)}")
+        padding_size = self.block_size - len(tensor_to_pad)
+        self.debug(f"padding_size: \n{padding_size}")
+        padded_tensor = torch.cat((tensor_to_pad, torch.zeros(padding_size, dtype=tensor_to_pad.dtype)), dim=0)
+        self.debug(f"the padded tensor: {padded_tensor}")
         return padded_tensor
 
     def batch(self, context):
-        # Claude:
+        if context.dim() == 1: # Als het een 1d tensor is, maak het een 2d tensor
+            context = context.unsqueeze(0)
         batches = []
-        self.debug("wft")
-        for start in range(0, len(context) - self.block_size + 1, self.block_size // 2):
-            end = start + self.block_size
-            batch = context[:, start:end]
-            batches.append(batch)
-            self.debug(f"es: {batches}")
-        return batches
+        self.debug(f"batching: {context}")
+        # Claude:
+        for row in context:
+            for i in range(0, len(row), self.block_size):
+                self.debug(batches)
+                end = i + self.block_size
+                if end > len(row):
+                    batch = row[i:]
+                    batches.append(self.pad(batch))
+                else:
+                    batch = row[i:end]
+                    batches.append(batch)
+        # for start in range(0, context.size(0) - self.block_size + 1, self.block_size // 2):
+        #     end = start + self.block_size
+        #     batch = context[:, start:end]
+        #     batches.append(batch)
+        self.debug(batches)
+        return torch.stack(batches)
 
         #Mijn:
         batches = []
@@ -183,7 +259,10 @@ class Transformer():
         #     batch = to_batch[:, ]
         #     batch.append(batches)
         
-
+    def load_data(self, path):
+        """
+        Shadows tokenizer load data
+        """
 
 
 
@@ -191,8 +270,19 @@ class Transformer():
         def __init__(self, Transformer: "Transformer") -> None:
             super().__init__()
             self.Transformer = Transformer
+
+            text = get_input("Wouter")
+            chars = sorted(list(set(text)))
+            vocab_size = len(chars)
+            stringtoint = { ch:i for i,ch in enumerate(chars) } # {"A":0, "B":1, ..., "!": 80}
+            inttostring= { i:ch for i,ch in enumerate(chars) } # {0:"A", 1:"B", ..., 80:"!"}
+            self._bencode = lambda s: [stringtoint[c] for c in s] # backup encoding algo
+            self._bdecode = lambda l: ''.join([inttostring[i] for i in l]) # backup decoding algo
+            self.distinct_tokens = chars
+            self.num_distinct_tokens = vocab_size
+
              # Each token directly reads off the logits for the next token from a lookup table (which lookup table?)
-            self.token_embedding_dimmingtable = nn.Embedding(self.Transformer.patch_embedding, self.Transformer.embedding_dim)
+            self.token_embedding_dimmingtable = nn.Embedding(self.num_distinct_tokens, self.Transformer.embedding_dim)
 
             """Note that the sequence they appear is also the sequence they are used"""
 
@@ -200,15 +290,18 @@ class Transformer():
             self.positioembedding_dimding_table = nn.Embedding(self.Transformer.block_size, self.Transformer.embedding_dim)
             self.blocks = nn.Sequential(*[self.Transformer.Block(self.Transformer, self.Transformer.embedding_dim, n_head=self.Transformer.n_head) for _ in range(self.Transformer.n_layer)])
             self.ln_f = nn.LayerNorm(self.Transformer.embedding_dim) # Final layer norm
-            self.lm_head = nn.Linear(self.Transformer.embedding_dim, self.Transformer.patch_embedding) # LM=loaded model
+            self.lm_head = nn.Linear(self.Transformer.embedding_dim, self.num_distinct_tokens) # LM=loaded model
             # N_embed is the number of embedded dimentions
             # .Embedding creates a shape of vocab_size x vocab_size
             # De inputs voor de transformer zoeken in de tensor rij en plukken de Xte (X=tokenized input integer) rij uit de lookup table
 
         def generate(self, context: torch.Tensor, slice: int=1):
             """"
+            Expects a long tensor
             Generates  óne (1) token
             """
+            if context.dtype != torch.long:
+                raise AttributeError
             the_entire_tensor, expected_error = self(context) # Does the prediction 
             newest_math = the_entire_tensor[:, -slice, :] # Foxus only the last time step, (B,C), de -1 skipt de T dimensie
             prob_new_token = F.softmax(newest_math, dim=-1) # apply softmax to get probabilities, ook (B,C)
@@ -222,6 +315,8 @@ class Transformer():
             Moet voortaan vanuit de tokenizer komen 
             """
             B, T = context.shape
+            self.Transformer.debug(B)
+            self.Transformer.debug(T)
             #context and targets are both (B,T) tensor of integers
             tok_em = self.token_embedding_dimmingtable(context)  # B,T,C 
                     # self.Tokenizer.embedding_
