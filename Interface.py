@@ -13,14 +13,14 @@ from helpers import *
 @dataclass
 class Transformer():
     # Other attribute
-    tokenizer:      str     # Kan generiek "audio" of "text" (foto video ooit?) zijn, of specifiek een pad naar een .pt bestand
+    tokenizer:      str     # file_path naar bestand
     data                    = None
     train_data: torch.Tensor= None
     test_data: torch.Tensor = None
     val_data:  torch.Tensor = None
     model:          "Model" = None
     m_sate:         dict    = None
-    debug:          bool    = False
+    debug_bool:     bool    = False
     device = 'cuda' if torch.cuda.is_available() else 'cpu'
     # Generic HP
     batch_size:     int     = 64    
@@ -40,22 +40,10 @@ class Transformer():
 
 
     def __post_init__(self) -> None:
-        self.logging = logging.getLogger(__name__); logging.basicConfig(level=logging.DEBUG if self.debug else logging.WARNING)
+        self.logging = logging.getLogger(__name__); logging.basicConfig(level=logging.DEBUG if self.debug_bool else logging.WARNING)
         self.debug = lambda s: self.logging.debug(f"\n{s}\n")
 
-        # By far niet het mooiste, maar het werkt; op python 3.10+ had ik match-switch cases gebruikt
-        # LET: kan een file_path zijn naar een bestaande, of een indicator voor text of audio
-        if self.tokenizer.lower() == "text":
-            self.Tok = TextTokenizer()
-        elif self.tokenizer.lower().endswith(".vocab"):
-            self.Tok = TextTokenizer().load_model(self.tokenizer)
-        elif self.tokenizer.lower() == "audio":
-            self.Tok = AudioTokenizer(debug = False)
-        elif self.tokenizer.lower().endswith(".aud"):
-            self.Tok = AudioTokenizer().load_model(self.tokenizer)
-        else:
-            print("Tokenizer should either be a path to a pre-saved tokenizer, or a string indicating 'text' or 'audio'")
-            raise NameError
+        self.load_tokenizer(self.tokenizer)
         
         # Model initialization: TODO make this better lol
         self.model = self.Model(self)
@@ -78,6 +66,25 @@ class Transformer():
             print(f"Failed to load model with error\n{e}\nFalling back to untrained model")
             self.model = self.Model()
     
+    def load_tokenizer(self, file_path):
+        # By far niet het mooiste, maar het werkt; op python 3.10+ had ik match-switch cases gebruikt
+        # LET: kan een file_path zijn naar een bestaande, of een indicator voor text of audio
+        if file_path.lower().endswith(".vocab"): # TODO Figure out either a secondary .name or a good way to differentiate
+            self.Tok = TextTokenizer()
+            self.Tok.load_tokenizer(file_path)
+            return True # Early return, .vocabs don't need to be trained
+        elif file_path.lower().endswith(".wav"):
+            self.Tok = AudioTokenizer(debug = self.debug_bool)
+        elif file_path.lower().endswith(".mp3"):
+            self.Tok = AudioTokenizer(debug = self.debug_bool)
+        elif file_path.lower().endswith(".txt"):
+            self.Tok = TextTokenizer(debug = self.debug_bool)
+        else:
+            print("Tokenizer param should point to a either a data of .vocab file")
+            raise NameError
+        self.Tok.train(file_path)
+        return True
+
     def optimize(self) -> None:
         self.debug("Starting otimization")
         for iter in range(self.max_iters):
@@ -270,19 +277,10 @@ class Transformer():
         def __init__(self, Transformer: "Transformer") -> None:
             super().__init__()
             self.Transformer = Transformer
-
-            text = get_input("Wouter")
-            chars = sorted(list(set(text)))
-            vocab_size = len(chars)
-            stringtoint = { ch:i for i,ch in enumerate(chars) } # {"A":0, "B":1, ..., "!": 80}
-            inttostring= { i:ch for i,ch in enumerate(chars) } # {0:"A", 1:"B", ..., 80:"!"}
-            self._bencode = lambda s: [stringtoint[c] for c in s] # backup encoding algo
-            self._bdecode = lambda l: ''.join([inttostring[i] for i in l]) # backup decoding algo
-            self.distinct_tokens = chars
-            self.num_distinct_tokens = vocab_size
+            self.vocab = Transformer.Tok.vocab
 
              # Each token directly reads off the logits for the next token from a lookup table (which lookup table?)
-            self.token_embedding_dimmingtable = nn.Embedding(self.num_distinct_tokens, self.Transformer.embedding_dim)
+            self.token_embedding_dimmingtable = nn.Embedding(self.vocab, self.Transformer.embedding_dim)
 
             """Note that the sequence they appear is also the sequence they are used"""
 
@@ -290,7 +288,7 @@ class Transformer():
             self.positioembedding_dimding_table = nn.Embedding(self.Transformer.block_size, self.Transformer.embedding_dim)
             self.blocks = nn.Sequential(*[self.Transformer.Block(self.Transformer, self.Transformer.embedding_dim, n_head=self.Transformer.n_head) for _ in range(self.Transformer.n_layer)])
             self.ln_f = nn.LayerNorm(self.Transformer.embedding_dim) # Final layer norm
-            self.lm_head = nn.Linear(self.Transformer.embedding_dim, self.num_distinct_tokens) # LM=loaded model
+            self.lm_head = nn.Linear(self.Transformer.embedding_dim, self.vocab) # LM=loaded model
             # N_embed is the number of embedded dimentions
             # .Embedding creates a shape of vocab_size x vocab_size
             # De inputs voor de transformer zoeken in de tensor rij en plukken de Xte (X=tokenized input integer) rij uit de lookup table
