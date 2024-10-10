@@ -15,6 +15,8 @@ from typing import Optional
 from dataclasses import dataclass, field
 from collections import defaultdict
 
+from helpers import *
+
 
 
 
@@ -22,10 +24,10 @@ from collections import defaultdict
 class GenericTokenizer(ABC):
     # Other attribute
     debug:        bool      = False
+    vocab_size:     int     = 512 # The amount of merges the default BPE algo uses
     vocab:          dict    = field(default_factory=dict)
     custom_tokens:  dict    = field(default_factory=dict)
-    n_merges: int           =   512 # The amount of merges the default BPE algo uses
-    merges: dict            = field(default_factory=dict) # The dictionary to keep track of which token x relates to the merged tuple (a,b)
+    merges: dict            = field(default_factory=dict) # The dictionary to keep track of which token x relates to the merged tuple (a,b) change to possible_merches
 
     def __post_init__(self) -> None:
         self.logging = logging.getLogger(__name__); logging.basicConfig(level=logging.DEBUG if self.debug else logging.WARNING)
@@ -33,12 +35,6 @@ class GenericTokenizer(ABC):
  
     # @abstractmethod
     def train(self, file_path):
-        self.debug(f"Training tokenizer on file: {file_path}")
-        if self.custom_tokens:
-            self.init_custom_tokens(self.custom_tokens)
-        tokens, info = self.encode(file_path)
-        self.vocab = info
-        self.debug(f"Tokenizer training completed")
         raise NotImplementedError
 
     @abstractmethod
@@ -83,20 +79,35 @@ class GenericTokenizer(ABC):
         ### ChatGPT ###
         while input.size(dims-1) < length:
             input = F.pad(input, (0, 1), "constant", 0)
-        self.debug(f"Tensor: {input}")
+        # self.debug(f"Tensor: {input}")
         returnal = input.masked_fill(torch.tril(torch.ones(input.size(dims-1), input.size(dims-1))) == 0, 0)
-        self.debug(f"Returnal: {returnal}")
+        # self.debug(f"Returnal: {returnal}")
 
         return returnal
     
-    def _get_byte_pairs(self, quantized_data):
-
-        pairs = defaultdict(int)
-        for row in quantized_data:
+    def _get_byte_pairs(self, data):
+        pairs = {}
+        for row in data:
             for i in range(len(row) - 1):
-                pair = (int(row[i]), int(row[i + 1]))
-                pairs[pair] += 1
+                pair = (row[i], row[i + 1])
+                if pair in pairs:
+                    pairs[pair] += 1
+                else:
+                    pairs[pair] = 1
         return pairs
+
+    def find_earliest_pair(self, byte_pairs, merge_history):
+        earliest_pairs = []
+        for pair in byte_pairs:
+            first_seen_index = merge_history.get(pair, float("inf"))
+            earliest_pairs.append((first_seen_index, pair))
+        earliest_pairs.sort() # Have python's internal call to C++ do it
+
+        pair_list = [pair for _, pair in earliest_pairs]
+        try:
+            return pair_list[0]
+        except Exception as e:
+            return None
 
     def _merge_most_common(self, data, pair_to_merge, new_token):
         new_data = []
@@ -113,14 +124,15 @@ class GenericTokenizer(ABC):
             new_data.append(new_row)
         return new_data
 
-    def byte_pair_encoding(self, quantized_data, vocab, merges): #n_merges is the amount of individual samples we're using; INCREASE THIS
+    def calculate_bpe(self, quantized_data): #n_merges is the amount of individual samples we're using; INCREASE THIS
         """
         Takes quantized data (TODO ADD EXAMPLE) and updates self.vocab
         """
         data = [list(row) for row in quantized_data]
-        token_n = self.n_merges
-        
-        for i in range(self.n_merges): # Voor elke mogelijke waarde in vocab
+        token_n = len(self.custom_tokens) # De offset tussen de custom tokens en normale tokens
+
+        for i in range(self.vocab_size): # Voor elke mogelijke waarde in vocab
+            data = np.array(data, dtype='object')
             pairs = self._get_byte_pairs(np.array(data, dtype='object'))
             if not pairs:
                 break
@@ -133,30 +145,31 @@ class GenericTokenizer(ABC):
             data = self._merge_most_common(data, most_common, token_n)
             token_n += 1
 
-        self.debug(f"BPE: {self.vocab}")
+        self.debug(f"vocab: {self.vocab}")
+        self.debug(f"------------------------")
+        self.debug(f"merges: {self.merges}")
         
-        return data, {'vocab' : self.vocab, 'merges': self.merges}
-
+        return data
     # Dict[str, Union[List[int], np.ndarray]]
-    def init_custom_tokens(self, custom_tokens):
-        token_to_pattern = {}
-        pattern_to_token = {}
-        vocab = {}
-        next_token = 0
-        # Initialize with base vocabulary
+    # def init_custom_tokens(self, custom_tokens):
+    #     token_to_pattern = {}
+    #     pattern_to_token = {}
+    #     vocab = {}
+    #     next_token = 0
+    #     # Initialize with base vocabulary
         
-        # Add custom tokens 
-        for token_name, pattern in custom_tokens.items():
-            pattern_tuple = tuple(pattern)
-            token_to_pattern[next_token] = pattern_tuple
-            pattern_to_token[pattern_tuple] = next_token
-            vocab[next_token] = pattern_tuple
-            next_token += 1
-        print(vocab)
-        # Vocab is the initial bpe dict
-        vocab = {i: i+next_token for i in range(sample_rate)}
-        print(f"i:i+{vocab}")
-        return vocab
+    #     # Add custom tokens 
+    #     for token_name, pattern in custom_tokens.items():
+    #         pattern_tuple = tuple(pattern)
+    #         token_to_pattern[next_token] = pattern_tuple
+    #         pattern_to_token[pattern_tuple] = next_token
+    #         vocab[next_token] = pattern_tuple
+    #         next_token += 1
+    #     print(vocab)
+    #     # Vocab is the initial bpe dict
+    #     vocab = {i: i+next_token for i in range(sample_rate)}
+    #     print(f"i:i+{vocab}")
+    #     return vocab
 
     
 
@@ -164,11 +177,10 @@ class GenericTokenizer(ABC):
 @dataclass
 class AudioTokenizer(GenericTokenizer):
     sample_rate:    int     = 512 # The amount of individual frames that the soundbyte is converted 
-    sample_rate = 1500
+    sample_rate = 512
     n_mels = 128
     n_fft = 1024
     hop_length = 512 
-    n_merges=64 # Bepaalt dit hoeveel individuele tokens er zijn?
     n_bits=8 # Used in quantization
 
     # #TODO Hier moet je nog over nadenken
@@ -192,26 +204,51 @@ class AudioTokenizer(GenericTokenizer):
 
     def __post_init__(self):
         return super().__post_init__()
-    
-    def encode(self, input):
+
+    def train(self, file_path):
+        self.debug(f"Training tokenizer on file: {file_path}")
+        if self.custom_tokens:
+            self.init_custom_tokens(self.custom_tokens)
+        wavevorm, sample_rate = self.load_data(file_path)
+        rauwe_tokens = self.extract_features(wavevorm, sample_rate)
+        tokens  = self.calculate_bpe(rauwe_tokens) # Change this to the bytepair encoding thing, extract feautures first
+        self.debug(f"Tokenizer training completed with tokenset: {tokens}")
+        
+ 
+    def encode(self, input=None, force_long = False):
         """
         Accepteert een bestandspad, returnt een tensor met tokens en de tokeninfo
         verwacht dat de tokenizer getraind is
         maakt gebruik van self.vocab om de tensor te maken
         gebruikt load_data() om data in te laden
-        gebruikt extract_features() om de mel spec te laden 
-        gebruikt quantize_features om de features te quantificeren
-        gebruikt BPE om dit te tokenizeren
+        gebruikt extract_features() om de mel_ spec (i.e. the tensor) te laden
+        encodet het, defaulted naar gebruik van BPE
         """
+        if input == None:
+            return torch.zeros((16, 16), dtype=torch.long)
         loaded_data, or_sample_rate         = self.load_data(input)
         features_of_data    = self.extract_features(loaded_data, or_sample_rate)
-        quantized_data      = self.quantize_features(features_of_data)
-        encoded_data, info  = self.byte_pair_encoding(quantized_data)
+        slightly_merged = list(features_of_data)
+        i = 0
+        self.debug(f"merging the total tokens of {len(slightly_merged)} amount of files")
+        self.debug(f"initializing merging with {slightly_merged}")
+        self.debug(f"Individuele tensors hebben een lengte van {[len(row) for row in slightly_merged]}")
+        while len(slightly_merged) >= 2:
+            byte_pairs = self._get_byte_pairs(slightly_merged)
+            pair_found_earliest_training_data = self.find_earliest_pair(byte_pairs, self.merges)
+            if pair_found_earliest_training_data not in self.merges: #Als dit een pair is wat niet gemerged kan worden
+                break # May have to be break, unsure
+            slightly_merged_x = self.merges[pair_found_earliest_training_data]
+            slightly_merged = self._merge_most_common(slightly_merged, pair_found_earliest_training_data, slightly_merged_x)
+            i += 1
+            if i % 100 == 0:
+                self.debug(f"Merged {i} tokens, slightly merged lengte: {len(slightly_merged)}")
+                self.debug(f"Net zijn deze tokens gemerged: {pair_found_earliest_training_data}")
+        tensorified = [torch.tensor(array) for array in slightly_merged]
+        concatenated = torch.cat(tensorified, dim=0)
         if self.debug:
-            self.debug(f"Byte pair encoded information: {info}")
-        return encoded_data, info
-
-        # return super().encode(input)
+            self.debug(f"Byte pair encoded information (CONCATED): {concatenated}")
+        return concatenated
 
     def decode(self, tensor, path) -> str:
         """
@@ -231,10 +268,14 @@ class AudioTokenizer(GenericTokenizer):
         waveform = waveform / torch.max(torch.abs(waveform)) # Ik vraag me af of dit waarde heeft
         MS_transform = T.MelSpectrogram(sample_rate=self.sample_rate, n_fft=self.n_fft, hop_length=self.hop_length, n_mels=self.n_mels)
         mel_spec = MS_transform(waveform)
-        mel_spec = mel_spec.squeeze().transpose(0, 1).numpy()
-        # Reshapes to a 2d array, I don't know what it was though
+        # Turn it into a numpy array!
+        mel_spec = mel_spec.squeeze().transpose(0, 1).numpy() 
+        # Reshapes to a 2d array
         mel_spec = mel_spec.reshape(-1, self.n_mels)
-        return mel_spec
+        # convert to tensor
+        tensor = self.array_to_tensor(mel_spec)
+
+        return tensor
 
     def quantize_features(self, mel_spec):
         min_val = np.min(mel_spec)
@@ -286,14 +327,35 @@ class AudioTokenizer(GenericTokenizer):
         if os.path.isdir(path):
             to_concat = []
             for file in os.listdir(path):
-                waveform, or_sample_rate = torchaudio.load(os.path.join(path, file))
+                absolute_path = os.path.join(path, file)
+                try:
+                    waveform, or_sample_rate = torchaudio.load(absolute_path)
+                except Exception as e:
+                    self.debug(f"Exception: {e}")
+                    continue
                 to_concat.append(waveform)
             if to_concat == []:
                 return torch.zeros((3, 3), dtype=torch.long), 5
+            self.debug(f"Tensors that will be concatenated: {to_concat}")
             return torch.cat(to_concat), or_sample_rate
         raise AttributeError 
 
-
+    def array_to_tensor(self, array) -> torch.Tensor:
+        # Claude:
+        """
+        Convert a numpy array to torch.long() tensor while preserving relative distances.
+        
+        Args:
+            np_array (numpy.ndarray): Input numpy array
+        Returns:
+            torch.Tensor: Long tensor with preserved relative distances
+        """
+        rounded = np.round(array, 2) # round to 2 decimals b/c floats
+        multipled = rounded   # increases accuracy apparently
+        tensor = torch.from_numpy(multipled)
+        long = tensor.long()
+        self.debug(f"long: {long}\n\nin contrast to original: {array}")
+        return long
 
 
 

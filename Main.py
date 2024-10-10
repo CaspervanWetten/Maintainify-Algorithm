@@ -4,11 +4,18 @@ from Interface import Transformer
 # Verwachtte interface:
 
 
-data_folder = "Data"
+data_folder = "Data/1-18527-A-44.wav"
+Data = "Data/"
 transformer = "folder_path/tokenizer.vocab"
-T = Transformer(tokenizer="Data\\1-22882-A-44.wav", debug_bool=True)
+dog_sound = "Data/dog2.wav"
+T = Transformer(tokenizer=dog_sound, debug_bool=True)
 # T.load_model("Models/test.pt")
 # T.load_data(data_folder)
 
 # print(T)
-print(f"generated: {T.generate(data_folder)}")
+
+cat_data = "Data/categorized/"
+T.load_categorized_data(cat_data)
+
+T.optimize_categorization()
+print(f"categorized: {T.generate(dog_sound)}")
