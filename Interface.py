@@ -263,14 +263,14 @@ class Transformer():
                 batches = float_to_long_tensor(batches)
 
             torch.set_printoptions(profile='full')
-            self.debug(batches)
+            self.debug(f"Individual batch: {batches}")
             torch.set_printoptions(profile='default')
 
 
             self.debug(f"Currently generating token {_ + 1}")
             # crop context to the last block_size tokens
             cropped = batches[:, -self.block_size:]
-            self.debug(f"batches: {batches}\n in contrast to: {cropped}")
+            self.debug(f"in contrast to: {cropped}")
             generated = self.model.generate(cropped)
             # context_wnew_token = torch.cat((input, self.model.generate(batch, self.block_size)), dim=1) # ( Append sampled index to the running sequence) (B, T+1)
             batches = torch.cat((batches, generated), dim=1) # Reassign context to context_wnew_token to ensure the new tokens are taken into consideration for continous generation
@@ -301,10 +301,16 @@ class Transformer():
         batches = []
         self.debug(f"batching: {context}")
         # Claude:
+        j = 0
         for row in context:
+            j+=1
+            self.debug(f"batching row {row}")
             for i in range(0, len(row), self.block_size):
+                if i % 500 == 0:
+                    self.debug(f"iteration {i} of row {j}")
                 end = i + self.block_size
                 if end > len(row):
+                    self.debug(f"We're padding iter {i}")
                     batch = row[i:]
                     batches.append(self.pad(batch))
                 else:
