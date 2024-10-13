@@ -108,17 +108,17 @@ class Transformer():
         self.debug("Start categorization optimizaiton")
         best_val_acc = 0.0
         for iter in range(self.max_iters):
-            self.model.train()
-            total_loss = 0
-            num_batches = 0
-            if iter % 100 == 0:
-                losses = self.estimate_categorization_loss()
-                print(f"losses{losses}")
-                print(f"avg_loss: {avg_loss}\nloss: {loss}")
+        #     self.model.train()
+        #     total_loss = 0
+        #     num_batches = 0
+        #     if iter % 100 == 0:
+        #         losses = self.estimate_categorization_loss()
+        #         print(f"losses{losses}")
+        #         print(f"avg_loss: {avg_loss}\nloss: {loss}")
 
 
             for label, tensors in self.train_data.items():
-                label_tensor = torch.tensor([label])
+                label_tensor = torch.tensor(label)
                 batches = self.batch(tensors)
                 for batch in batches:
                     optimizer.zero_grad()
@@ -174,27 +174,22 @@ class Transformer():
                 self.debug(f"split: {split}")
                 for label, tensors in data_dict[split].items():
                     i+=1
-                    self.debug(f"tensors iter: {i}\nwith tensors: {tensors}")
-                    j = 0
-                    batches = self.batch(torch.cat([tensor for tensor in tensors], dim=1))
-                    for batch in batches:
-                        self.debug(f"batch j {j}")
-                        embeddings = self.model.get_embeddings(batch)
-                        pooled = embeddings.mean(dim=1)
-                        logits = self.model.classification_head(pooled)
-                        predictions = logits.argmax(dim=1)
-                        correct += (predictions == label).sum().item()
-                        self.debug(f"correct??? {correct}")
+                    batches = self.batch(torch.cat([tensor for tensor in tensors], dim=0))
+                    torch.set_printoptions(profile='full')
+                    self.debug(f"tensors iter: {i}\nwith tensors: {batches}")
+                    torch.set_printoptions(profile='default')
+                    embeddings = self.model.get_embeddings(batches)
+                    pooled = embeddings.mean(dim=1)
+                    logits = self.model.classification_head(pooled)
+                    predictions = logits.argmax(dim=1)
+                    correct += (predictions == label).sum().item()
+                    self.debug(f"correct??? {correct}")
 
-                        total += predictions.size(0)
+                    total += predictions.size(0)
         
         return correct / total if total > 0 else 0.0
 
     def load_data(self, path, split=None) -> None:
-        possible = [None, "train", "val", "test", "generate",  "return"] 
-        if split not in possible:
-            print(f"split is not one of {possible}")
-            raise NameError
         # Could be more Pythonic (literally just ask GPT) but this is nice and explicit :)
         if split == "generate":
             return self.Tok.load_data(path)
@@ -222,9 +217,21 @@ class Transformer():
         self.test_data = {}
         self.val_data = {}
         for folder_name in os.listdir(path):
-            full_path = os.path.join(path, folder_name)
-            if os.path.isdir(full_path):
-                data = self.load_data(full_path, split="return")
+            full_path = os.path.join(path, folder_name) # full_path here us passed_folder/category1
+            if os.path.isdir(full_path): 
+                data = []
+                self.debug(f"empty data var \n{data}")
+                for file in (os.listdir(full_path)):
+                    try:
+                        data.append(self.Tok.encode(os.path.join(full_path, file)))
+                    except Exception as e:
+                        self.debug(f"Loading file {file} failed with error \n{e}")
+                # data = self.load_data(full_path, split="return") # Data is the fully concatened tensor (2d?) from all the files
+                
+                # torch.set_printoptions(profile='full')
+                # self.debug(f"Fully realized data list: {data}")
+                # torch.set_printoptions(profile='default')
+                
                 split1 = int(0.7 * len(data))  # 70% for training
                 split2 = int(0.9 * len(data))  # 20% for validation, 10% for test
                 train_data = data[:split1]
@@ -234,8 +241,15 @@ class Transformer():
                 self.val_data[folder_name] = val_data
                 self.test_data[folder_name] = test_data
             else:
-                raise AttributeError("Passed folder does not have categorized")
+                raise AttributeError("Passed folder does not have categorized data???")
+        
 
+        
+        # self.debug(f"Finalized importing train, val and test data\ntrain: {self.train_data}")
+        # self.debug(f"val: {self.val_data}")
+        # self.debug(f"test: {self.test_data}")
+        # self.debug(f"self.train:{self.train_data}\nV normal train: {train_data}")
+        # self.debug(f"split values: {split1}\n2: {split2}")
 
 
     # Alias functions, shadow the model functionality alias interfacing
@@ -261,12 +275,6 @@ class Transformer():
             if batches.dtype != torch.long:
                 print(f"WARNING \ncontext tensor should be of datatype Long, given tensor is of type: \n{batches.dtype}\n Now converting using backup converting algorithm\n")
                 batches = float_to_long_tensor(batches)
-
-            torch.set_printoptions(profile='full')
-            self.debug(f"Individual batch: {batches}")
-            torch.set_printoptions(profile='default')
-
-
             self.debug(f"Currently generating token {_ + 1}")
             # crop context to the last block_size tokens
             cropped = batches[:, -self.block_size:]
@@ -306,7 +314,7 @@ class Transformer():
             j+=1
             self.debug(f"batching row {row}")
             for i in range(0, len(row), self.block_size):
-                if i % 500 == 0:
+                if i % 1500 == 0:
                     self.debug(f"iteration {i} of row {j}")
                 end = i + self.block_size
                 if end > len(row):

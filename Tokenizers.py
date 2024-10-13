@@ -145,9 +145,10 @@ class GenericTokenizer(ABC):
             data = self._merge_most_common(data, most_common, token_n)
             token_n += 1
 
-        self.debug(f"vocab: {self.vocab}")
-        self.debug(f"------------------------")
-        self.debug(f"merges: {self.merges}")
+        # Shows merges and vocab dict; note that these are reverse ofc.  
+        # self.debug(f"vocab: {self.vocab}")            # TODO: Why are some already tensors and some just number pairs?
+        # self.debug(f"------------------------")
+        # self.debug(f"merges: {self.merges}")
         
         return data
     # Dict[str, Union[List[int], np.ndarray]]
@@ -179,7 +180,7 @@ class AudioTokenizer(GenericTokenizer):
     sample_rate:    int     = 512 # The amount of individual frames that the soundbyte is converted 
     sample_rate = 512
     n_mels = 128
-    n_fft = 1024
+    n_fft = 256
     hop_length = 512 
     n_bits=8 # Used in quantization
 
@@ -212,7 +213,7 @@ class AudioTokenizer(GenericTokenizer):
         wavevorm, sample_rate = self.load_data(file_path)
         rauwe_tokens = self.extract_features(wavevorm, sample_rate)
         tokens  = self.calculate_bpe(rauwe_tokens) # Change this to the bytepair encoding thing, extract feautures first
-        self.debug(f"Tokenizer training completed with tokenset: {tokens}")
+        self.debug(f"Tokenizer training completed\nExample has been tokenized to: {tokens}")
         
  
     def encode(self, input=None, force_long = False):
@@ -237,7 +238,7 @@ class AudioTokenizer(GenericTokenizer):
             byte_pairs = self._get_byte_pairs(slightly_merged)
             pair_found_earliest_training_data = self.find_earliest_pair(byte_pairs, self.merges)
             if pair_found_earliest_training_data not in self.merges: #Als dit een pair is wat niet gemerged kan worden
-                break # May have to be break, unsure
+                break # May have to be continue, unsure
             slightly_merged_x = self.merges[pair_found_earliest_training_data]
             slightly_merged = self._merge_most_common(slightly_merged, pair_found_earliest_training_data, slightly_merged_x)
             i += 1
@@ -247,7 +248,14 @@ class AudioTokenizer(GenericTokenizer):
         tensorified = [torch.tensor(array) for array in slightly_merged]
         concatenated = torch.cat(tensorified, dim=0)
         if self.debug:
+            torch.set_printoptions(profile='full')
             self.debug(f"Byte pair encoded information (CONCATED): {concatenated}")
+            torch.set_printoptions(profile='default')
+        if concatenated.max() > self.vocab_size:
+            torch.set_printoptions(profile='full')
+            self.debug(f"Individual batch: {concatenated}")
+            torch.set_printoptions(profile='default')
+            return "x"
         return concatenated
 
     def decode(self, tensor, path) -> str:
@@ -257,11 +265,12 @@ class AudioTokenizer(GenericTokenizer):
         return NotImplementedError
 
     def extract_features(self, waveform, or_sample_rate):
-        
         num_tokens = waveform.size(1)  # Assuming waveform shape is (channels, time-steps)
         # Convert stereo to mono
+        self.debug(f"initial waveform shape: {waveform.shape[0]}")
         if waveform.shape[0] > 1: 
             waveform = torch.mean(waveform, dim=0, keepdim=True)
+        self.debug(f"initial waveform sample rate: {or_sample_rate}\nin vergelijking met: {self.sample_rate}")
         if or_sample_rate != self.sample_rate:
             resampler = T.Resample(orig_freq=or_sample_rate, new_freq=self.sample_rate)
             waveform = resampler(waveform)
@@ -316,17 +325,19 @@ class AudioTokenizer(GenericTokenizer):
 
     def load_data(self, path: str) -> torch.Tensor:
         """
-        Reads the input (either a string containing text or a string pointing towards a file/folder) and returns a tensor
+        Reads the input (either a string containing text or a string pointing towards a file/folder) and the torch.load() function
         If an empty dir is presented, returns a 3x3 tensor of 0s
         """
-        self.debug(path)
         if os.path.isfile(path):
-
+            self.debug(path)
             waveform, or_sample_rate = torchaudio.load(path) 
             return waveform, or_sample_rate
         if os.path.isdir(path):
             to_concat = []
+            i = 0
             for file in os.listdir(path):
+                i +=1
+                self.debug(f"doen bestand {i}")
                 absolute_path = os.path.join(path, file)
                 try:
                     waveform, or_sample_rate = torchaudio.load(absolute_path)
@@ -337,7 +348,14 @@ class AudioTokenizer(GenericTokenizer):
             if to_concat == []:
                 return torch.zeros((3, 3), dtype=torch.long), 5
             self.debug(f"Tensors that will be concatenated: {to_concat}")
+            self.debug(f"geladen pad: {path}")
             return torch.cat(to_concat), or_sample_rate
+        
+        try:
+            waveform, or_sample_rate = torchaudio.load(path)
+            print(f"Mp3 file passed")
+        except Exception as e:
+            self.debug(f"error while loading data: \n{e}")
         raise AttributeError 
 
     def array_to_tensor(self, array) -> torch.Tensor:
@@ -354,7 +372,7 @@ class AudioTokenizer(GenericTokenizer):
         multipled = rounded   # increases accuracy apparently
         tensor = torch.from_numpy(multipled)
         long = tensor.long()
-        self.debug(f"long: {long}\n\nin contrast to original: {array}")
+        # self.debug(f"long: {long}\n\nin contrast to original: {array}") Check rounding errors -> Now rounds small numbers (e-01) to 0
         return long
 
 
