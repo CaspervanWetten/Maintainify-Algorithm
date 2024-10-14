@@ -1,9 +1,14 @@
 import random
 import logging
+import os
+import tqdm
+import math
+import numpy as np
+import hashlib
+
 import torch
 import torch.nn as nn
 from torch.nn import functional as F
-import os
 
 # from helpers import get_input
 from time import sleep
@@ -81,10 +86,10 @@ class Transformer():
             self.Tok = AudioTokenizer(debug = self.debug_bool)
         elif file_path.lower().endswith(".txt"):
             self.Tok = TextTokenizer(debug = self.debug_bool)
+            self.Tok.train(file_path)
         else:
             print("Tokenizer param should point to a either a data of .vocab file")
             raise NameError
-        self.Tok.train(file_path)
         return True
 
     def optimize(self) -> None:
@@ -105,49 +110,29 @@ class Transformer():
     def optimize_categorization(self):
         # params = self.model.classification_head.parameters() + self.model.parameters()
         optimizer = torch.optim.AdamW(self.model.parameters(), lr=self.learning_rate)
-        self.debug("Start categorization optimizaiton")
-        best_val_acc = 0.0
         for iter in range(self.max_iters):
-        #     self.model.train()
-        #     total_loss = 0
-        #     num_batches = 0
-        #     if iter % 100 == 0:
-        #         losses = self.estimate_categorization_loss()
-        #         print(f"losses{losses}")
-        #         print(f"avg_loss: {avg_loss}\nloss: {loss}")
-
-
-            for label, tensors in self.train_data.items():
-                label_tensor = torch.tensor(label)
-                batches = self.batch(tensors)
-                for batch in batches:
+            if iter  == 1:
+                print(f'Training loop started')
+            
+            self.model.train()
+            # NOT the batching function
+            # Im hardcoding tupled train_data (categorization)
+            for target in self.train_data:
+                self.debug(f"training on {target}")
+                batched_target = self.batch(target)
+                for sample in tqdm.tqdm(self.train_data[target], total=len(self.train_data[target])):
+                    self.debug(f"training iteration: {self.train_data[target].index(sample) + 1}")
+                    batches = self.batch(sample)
+                    out, loss = self.model(batches, batched_target)
                     optimizer.zero_grad()
-                    embeddings = self.model.get_embeddings()
-                    pooled = embeddings.mean(dim=1)
-                    logits = self.model.classification_head(pooled)
-                    loss = F.cross_entropy(logits, label_tensor)
+                    self.debug(f"out: {out}")
+                    self.debug(f"loss: {loss}")
                     loss.backward()
                     optimizer.step()
-                    total_loss += loss.item()
-                    num_batches += 1
-            avg_loss = total_loss / num_batches
+                
 
-        for iter in range(self.max_iters):
-            if iter % self.eval_interval == 0:
-                metrics = self.estimate_categorization_loss()
-                self.debug(f"step: {iter}")
-                self.debug(f"train loss: {metrics['train_loss']:.4f}, accuracy {metrics['train_accuracy']:.4f}")
-                self.debug(f"train loss: {metrics['val_loss']:.4f}, accuracy {metrics['val_accuracy']:.4f}")
-            labels = list(self.train_data.keys())
-            label = random.choice(labels)
-            tensors = self.train_data[label]
-            train_batches = self.batch(tensors)
-            for batch in train_batches:
-                logits, loss = self.model(batch)
-                self.optimizer.zero_grad(set_to_none=True)
-                loss.backward()
-                self.optimizer.step()
 
+            
     @torch.no_grad() # A context manager (?) to tell PyTorch to not make these backwards callable, e.g. skip back propagation
     def estimate_loss(self):
         out = {}
@@ -216,40 +201,46 @@ class Transformer():
         self.train_data = {}
         self.test_data = {}
         self.val_data = {}
-        for folder_name in os.listdir(path):
+        for folder_name in os.listdir(path):           
             full_path = os.path.join(path, folder_name) # full_path here us passed_folder/category1
             if os.path.isdir(full_path): 
                 data = []
-                self.debug(f"empty data var \n{data}")
                 for file in (os.listdir(full_path)):
                     try:
                         data.append(self.Tok.encode(os.path.join(full_path, file)))
                     except Exception as e:
                         self.debug(f"Loading file {file} failed with error \n{e}")
-                # data = self.load_data(full_path, split="return") # Data is the fully concatened tensor (2d?) from all the files
-                
-                # torch.set_printoptions(profile='full')
-                # self.debug(f"Fully realized data list: {data}")
-                # torch.set_printoptions(profile='default')
-                
                 split1 = int(0.7 * len(data))  # 70% for training
                 split2 = int(0.9 * len(data))  # 20% for validation, 10% for test
                 train_data = data[:split1]
                 val_data = data[split1:split2]
                 test_data = data[split2:]
-                self.train_data[folder_name] = train_data
-                self.val_data[folder_name] = val_data
-                self.test_data[folder_name] = test_data
+                folder_tensor = torch.tensor(self.generate_tensor_from_string(folder_name))
+                self.debug(f"folder name: {folder_name}\ntensorized to: {folder_tensor}")
+                self.train_data[folder_tensor] = train_data
+                self.val_data[folder_tensor] = val_data
+                self.test_data[folder_tensor] = test_data
             else:
                 raise AttributeError("Passed folder does not have categorized data???")
-        
-
-        
-        # self.debug(f"Finalized importing train, val and test data\ntrain: {self.train_data}")
+        # self.debug(f"Finalized importing train, val and test data\n")
+        # self.debug(f"train: {self.train_data}")
         # self.debug(f"val: {self.val_data}")
         # self.debug(f"test: {self.test_data}")
         # self.debug(f"self.train:{self.train_data}\nV normal train: {train_data}")
-        # self.debug(f"split values: {split1}\n2: {split2}")
+        # self.debug(f"split values: {split1}\n2: {split2}\nlen: {len(data)}")
+
+    def generate_tensor_from_string(saelf, s, shape=(96, 96)):
+        # Create a hash of the string
+        hash_object = hashlib.md5(s.encode())
+        hash_hex = hash_object.hexdigest()
+        
+        # Use the hash to seed the random number generator
+        seed = int(hash_hex, 16) % (2**32 - 1)
+        np.random.seed(seed)
+        
+        # Generate a random 3x3 tensor
+        return np.random.rand(*shape)
+
 
 
     # Alias functions, shadow the model functionality alias interfacing
@@ -257,28 +248,15 @@ class Transformer():
         """
         Alias for the model.categorize; also handles interfacing (i.e., translating input to a tensor if it isn't already)
         """
-        # if input == None:
-        #         input = torch.zeros((9, 9), dtype=torch.long)
-        # if not isinstance(input, torch.Tensor):
-        #         input = self.load_data(input, "generate")
-        #         self.debug(f"encoding input")
-        # self.debug(f"encoded Input: {len(input)} ; {input}")
-            
-        # self.debug(f"input size(0): {input.size(0)}")
-        # if input.size(1) > self.block_size:
-        #     self.debug(f"batching input")
-        #     input = self.batch(input)
-        # encoded = torch.tensor(self._bencode(input), dtype=torch.long)
         encoded = self.Tok.encode(input)
         batches = self.batch(encoded)
         for _ in range(max_new_tokens):
             if batches.dtype != torch.long:
-                print(f"WARNING \ncontext tensor should be of datatype Long, given tensor is of type: \n{batches.dtype}\n Now converting using backup converting algorithm\n")
-                batches = float_to_long_tensor(batches)
+                print(f"ERROR \ncontext tensor should be of datatype Long, given tensor is of type: \n{batches.dtype}\n")
+                return 
             self.debug(f"Currently generating token {_ + 1}")
             # crop context to the last block_size tokens
             cropped = batches[:, -self.block_size:]
-            self.debug(f"in contrast to: {cropped}")
             generated = self.model.generate(cropped)
             # context_wnew_token = torch.cat((input, self.model.generate(batch, self.block_size)), dim=1) # ( Append sampled index to the running sequence) (B, T+1)
             batches = torch.cat((batches, generated), dim=1) # Reassign context to context_wnew_token to ensure the new tokens are taken into consideration for continous generation
@@ -307,18 +285,15 @@ class Transformer():
         if context.dim() == 1: # Als het een 1d tensor is, maak het een 2d tensor
             context = context.unsqueeze(0)
         batches = []
-        self.debug(f"batching: {context}")
         # Claude:
         j = 0
         for row in context:
             j+=1
-            self.debug(f"batching row {row}")
             for i in range(0, len(row), self.block_size):
-                if i % 1500 == 0:
-                    self.debug(f"iteration {i} of row {j}")
+                # if i % 1500 == 0:
+                #     self.debug(f"batching iteration {i} of row {j}")
                 end = i + self.block_size
                 if end > len(row):
-                    self.debug(f"We're padding iter {i}")
                     batch = row[i:]
                     batches.append(self.pad(batch))
                 else:
@@ -329,7 +304,6 @@ class Transformer():
         #     batch = context[:, start:end]
         #     batches.append(batch)
         stacked = torch.stack(batches)
-        self.debug(f"Batchified: {stacked}")
         return stacked
 
         #Mijn:
@@ -387,7 +361,6 @@ class Transformer():
         def get_embeddings(self, tensor):
             # Claude
             B, T = tensor.shape
-            self.Transformer.debug(f"input max: {tensor.max()}\n compared to vocab_size: {self.vocab_size}")
             tok_emb = self.token_embedding_dimmingtable(tensor)
             pos_emb = self.positioembedding_dimding_table(torch.arrange(T, device=self.Transformer.device))
             x = tok_emb + pos_emb
@@ -403,14 +376,12 @@ class Transformer():
             Moet voortaan vanuit de tokenizer komen 
             """
             B, T = context.shape
-            self.Transformer.debug(f"B: {B}\nT: {T}\ncontext max: {context.max()}\ncompared to vocab: {self.vocab_size}")
-            #context and targets are both (B,T) tensor of integers
+            # self.Transformer.debug(f"B: {B}\nT: {T}\ncontext max: {context.max()}\ncompared to vocab: {self.vocab_size}")
+            # #context and targets are both (B,T) tensor of integers
             tok_em = self.token_embedding_dimmingtable(context)  # B,T,C 
                     # self.Tokenizer.embedding_
             pos_em = self.positioembedding_dimding_table(torch.arange(T, device=self.Transformer.device)) # T, C
             x = tok_em + pos_em # B,T,
-            # ----------------------------
-            # Volgens mij moet alles hierboven de tokenizer worden
             x = self.blocks(x)
             x = self.ln_f(x)
             logits = self.lm_head(x) # (B,T, vocab_size)
@@ -426,7 +397,14 @@ class Transformer():
                 # Dit werkt niet, de input van cross_entropy moet BxCxT zijn ipv BxTxC
                 B, T, C = logits.shape
                 logits = logits.view(B*T, C) # enkel 2d array, conformt aan cross_entropy functie, zelfde moet gebeurten bij targets
-                targets = targets.view(B*T) # Voor reden die ik niet snap is targets.view(-1) hetzelfde
+                
+                # Claude: Was enkel targets = targets.view(B * T)
+                if targets.dim() == 2:
+                    targets = targets.view(B * T)
+                elif targets.dim() == 1 and targets.size(0) == B * T:
+                    pass  # targets is already the correct shape
+                else:
+                    raise ValueError(f"Unexpected targets shape: {targets.shape}. Expected ({B}, {T}) or ({B * T},)")
                 loss = F.cross_entropy(logits, targets) # Hoe goed voorspel je het volgende karakter gebasseerd op de logit?
                 # De waarde van 
                 
