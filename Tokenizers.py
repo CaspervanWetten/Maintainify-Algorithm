@@ -178,11 +178,13 @@ class GenericTokenizer(ABC):
 @dataclass
 class AudioTokenizer(GenericTokenizer):
     sample_rate:    int     = 512 # The amount of individual frames that the soundbyte is converted 
-    sample_rate = 512
+    sample_rate = 1024
     n_mels = 128
     n_fft = 256
     hop_length = 512 
     n_bits=8 # Used in quantization
+    max_iters = 1024 # Maximum iterations for the k-means clustering algo
+    convergence_tolerance = 1e-8 # Maximum individual convergence for the k-means clustering algo
 
     # #TODO Hier moet je nog over nadenken
     # visualize: bool     = True
@@ -214,8 +216,10 @@ class AudioTokenizer(GenericTokenizer):
         rauwe_tokens = self.extract_features(wavevorm, sample_rate)
         tokens  = self.calculate_bpe(rauwe_tokens) # Change this to the bytepair encoding thing, extract feautures first
         self.debug(f"Tokenizer training completed\nExample has been tokenized to: {tokens}")
-        
- 
+        # Met het gebruik van k-means clustering is het 'trainen' van je audio tokenizer niet eens nodig; 
+        # self.vocab is gwn de range(0, vocab_size)
+
+
     def encode(self, input=None, force_long = False):
         """
         Accepteert een bestandspad, returnt een tensor met tokens en de tokeninfo
@@ -229,35 +233,9 @@ class AudioTokenizer(GenericTokenizer):
             return torch.zeros((16, 16), dtype=torch.long)
         loaded_data, or_sample_rate         = self.load_data(input)
         features_of_data    = self.extract_features(loaded_data, or_sample_rate)
-        slightly_merged = list(features_of_data)
-        i = 0
-        self.debug(f"merging the total tokens of {len(slightly_merged)} amount of files")
-        self.debug(f"initializing merging with {slightly_merged}")
-        self.debug(f"Individuele tensors hebben een lengte van {[len(row) for row in slightly_merged]}")
-        while len(slightly_merged) >= 2:
-            byte_pairs = self._get_byte_pairs(slightly_merged)
-            pair_found_earliest_training_data = self.find_earliest_pair(byte_pairs, self.merges)
-            if pair_found_earliest_training_data not in self.merges: #Als dit een pair is wat niet gemerged kan worden
-                break # May have to be continue, unsure
-            slightly_merged_x = self.merges[pair_found_earliest_training_data]
-            slightly_merged = self._merge_most_common(slightly_merged, pair_found_earliest_training_data, slightly_merged_x)
-            i += 1
-            if i % 100 == 0:
-                self.debug(f"Merged {i} tokens, slightly merged lengte: {len(slightly_merged)}")
-                self.debug(f"Net zijn deze tokens gemerged: {pair_found_earliest_training_data}")
-        tensorified = [torch.tensor(array) for array in slightly_merged]
-        concatenated = torch.cat(tensorified, dim=0)
-        if self.debug:
-            torch.set_printoptions(profile='full')
-            self.debug(f"Byte pair encoded information (CONCATED): {concatenated}")
-            torch.set_printoptions(profile='default')
-        if concatenated.max() > self.vocab_size:
-            torch.set_printoptions(profile='full')
-            self.debug(f"Individual batch: {concatenated}")
-            torch.set_printoptions(profile='default')
-            return "x"
-        return concatenated
-
+        cluster_values, tokens = self.k_means_clustering(features_of_data)
+        return torch.tensor(tokens) # return as tensor
+    
     def decode(self, tensor, path) -> str:
         """
         Takes a tensor and decodes it, returns the saved folder string 
@@ -265,12 +243,9 @@ class AudioTokenizer(GenericTokenizer):
         return NotImplementedError
 
     def extract_features(self, waveform, or_sample_rate):
-        num_tokens = waveform.size(1)  # Assuming waveform shape is (channels, time-steps)
         # Convert stereo to mono
-        self.debug(f"initial waveform shape: {waveform.shape[0]}")
         if waveform.shape[0] > 1: 
             waveform = torch.mean(waveform, dim=0, keepdim=True)
-        self.debug(f"initial waveform sample rate: {or_sample_rate}\nin vergelijking met: {self.sample_rate}")
         if or_sample_rate != self.sample_rate:
             resampler = T.Resample(orig_freq=or_sample_rate, new_freq=self.sample_rate)
             waveform = resampler(waveform)
@@ -278,13 +253,21 @@ class AudioTokenizer(GenericTokenizer):
         MS_transform = T.MelSpectrogram(sample_rate=self.sample_rate, n_fft=self.n_fft, hop_length=self.hop_length, n_mels=self.n_mels)
         mel_spec = MS_transform(waveform)
         # Turn it into a numpy array!
-        mel_spec = mel_spec.squeeze().transpose(0, 1).numpy() 
-        # Reshapes to a 2d array
-        mel_spec = mel_spec.reshape(-1, self.n_mels)
+        mel_spec = mel_spec.squeeze().numpy().flatten()
         # convert to tensor
-        tensor = self.array_to_tensor(mel_spec)
+        return mel_spec
 
-        return tensor
+    def k_means_clustering(self, data_wav):
+        centroids = np.random.choice(data_wav, size=self.vocab_size, replace=False)
+        for _ in range(self.max_iters):
+            distances = np.abs(data_wav[:, np.newaxis] - centroids)
+            labels = np.argmin(distances, axis=1)
+            new_centroids = np.array([data_wav[labels == k].mean() for k in range(self.vocab_size)])
+            if np.all(np.abs(new_centroids - centroids) < self.convergence_tolerance):
+                break
+            centroids = new_centroids
+        return centroids, labels
+
 
     def quantize_features(self, mel_spec):
         min_val = np.min(mel_spec)
@@ -329,7 +312,7 @@ class AudioTokenizer(GenericTokenizer):
         If an empty dir is presented, returns a 3x3 tensor of 0s
         """
         if os.path.isfile(path):
-            self.debug(path)
+            self.debug(f"loading file: {path}")
             waveform, or_sample_rate = torchaudio.load(path) 
             return waveform, or_sample_rate
         if os.path.isdir(path):
