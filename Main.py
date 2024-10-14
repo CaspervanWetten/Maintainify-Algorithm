@@ -10,14 +10,7 @@ Data = "Data/"
 transformer = "folder_path/tokenizer.vocab"
 dog_sound = "Data/dog2.wav"
 T = Transformer(tokenizer=dog_sound, debug_bool=True)
-# T.load_model("Models/test.pt")
-# T.load_data(data_folder)
-
-
-x, y = torchaudio.load("Data\\categorized\\cats\\cat_1.wav")
-print(x, y)
-
-# print(T)
+print(f"transformer stats: {T}")
 
 categorization_folder = "Data\\categorized\\"
 T.load_categorized_data(categorization_folder)
