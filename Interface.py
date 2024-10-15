@@ -30,7 +30,7 @@ class Transformer():
     device = 'cuda' if torch.cuda.is_available() else 'cpu'
     # Generic HP
     batch_size:     int     = 64    
-    block_size:     int     = 16    
+    block_size:     int     = 16    # Equivalent to the sequence length (T in B,T,C)
     max_iters:      int     = 1200  
     embedding_dim:  int     = 384   
     patch_embedding: int    = 384 # Letterlijk het maximum totaal aantal tokens waar de trans context over onthoudt
@@ -396,9 +396,14 @@ class Transformer():
             else:
                 # Dit werkt niet, de input van cross_entropy moet BxCxT zijn ipv BxTxC
                 B, T, C = logits.shape
+                self.Transformer.debug(f"logits before: {logits}")
                 logits = logits.view(B*T, C) # enkel 2d array, conformt aan cross_entropy functie, zelfde moet gebeurten bij targets
-                
+                self.Transformer.debug(f"logits after: {logits}")
+                self.Transformer.debug(f"B: {B}\nT: {T}\nC: {C}")
                 # Claude: Was enkel targets = targets.view(B * T)
+                self.Transformer.debug(f"targets: {targets}")
+                self.Transformer.debug(f"logits shape: {logits.shape}")
+                self.Transformer.debug(f"targets shape: {targets.shape}")
                 if targets.dim() == 2:
                     targets = targets.view(B * T)
                 elif targets.dim() == 1 and targets.size(0) == B * T:
