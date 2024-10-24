@@ -117,13 +117,16 @@ class Transformer():
             self.model.train()
             # NOT the batching function
             # Im hardcoding tupled train_data (categorization)
+
+            # This should be part of the model functionality
             for target in self.train_data:
                 self.debug(f"training on {target}")
                 batched_target = self.batch(target)
                 for sample in tqdm.tqdm(self.train_data[target], total=len(self.train_data[target])):
                     self.debug(f"training iteration: {self.train_data[target].index(sample) + 1}")
                     batches = self.batch(sample)
-                    out, loss = self.model(batches, batched_target)
+                    out, loss = self.model(batches)
+                    out, loss = self.model.classification_head(out, batched_target)
                     optimizer.zero_grad()
                     self.debug(f"out: {out}")
                     self.debug(f"loss: {loss}")
