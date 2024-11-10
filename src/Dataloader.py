@@ -1,5 +1,5 @@
 import os
-
+from dataclasses import dataclass
 
 try:
     import torch
@@ -9,27 +9,35 @@ try:
 except ImportError:
     TORCH_AVAILABLE = False
 
+@dataclass
 class Dataloader():
+    file_path: str
+    isdir = False
+    loaded = []
+    transformed = []
     """
-    Loads the file path passed to it.
-    Loads the file if file path is a file
-    Loads the folder, file by file, if file path is a folder
-    If the second level files are all folders, loads the data categorized by the folder names
+    Kan een bestand meekrijgen ook bij initialisatie zowel als .load() voor dubbele bruikbaarheid,
+    Maakt de code van .load() iets wonkyer
     """
-    def __init__(self, file_path) -> None:
-        self.file_path = file_path
-        self.isdir = False
-        self.loaded = []
-        self.transformed = []
+    def __post_init__(self):
+        pass
 
     def load(self, file_path=None):
         filepath = os.Path(self.file_path if file_path == None else file_path)
         if not filepath.exists():
             raise FileNotFoundError(f"file not found: {filepath}")
+        # TODO: verfwijder alles en vervang het met:
+        # als bestand:
+            # return iterable met 1 item(Laad bestand)
+        # andersals folder:
+        #     voor bestand in folder:
+        #         laad bestand
+        #     return alle als individuele items in een iterable
+    
         if os.path.isdir(filepath): 
             for secondfile in os.listdir(filepath):
                 if secondfile.isdir():
-                    for thirdfile in 
+                    # for thirdfile in 
             self.loaded = [self.load_file(file) for file in filepath.listdir()]
         else:
             self.loaded.append(self.load_single_file(filepath))
@@ -40,41 +48,16 @@ class Dataloader():
         return loaded
 
 
-    def transform(self, algorithm):
-        possible_algos = {
-            "mel_spec": self.mel_spec
-        }
-        if algorithm in possible_algos.keys():
-            for loaded in self.loaded:
-                self.transformed.append(possible_algos[algorithm](loaded))
-        else:
-            raise ValueError("Unknown algorithm")
-
-    def mel_spec(self, loaded):
-        waveform, or_sample_rate = loaded
-        # Convert stereo to mono
-        if waveform.shape[0] > 1: 
-            waveform = torch.mean(waveform, dim=0, keepdim=True)
-        if or_sample_rate != self.sample_rate:
-            resampler = T.Resample(orig_freq=or_sample_rate, new_freq=self.sample_rate)
-            waveform = resampler(waveform)
-        waveform = waveform / torch.max(torch.abs(waveform)) # Ik vraag me af of dit waarde heeft
-        MS_transform = T.MelSpectrogram(sample_rate=self.sample_rate, n_fft=self.n_fft, hop_length=self.hop_length, n_mels=self.n_mels)
-        mel_spec = MS_transform(waveform)
-        # Turn it into a numpy array!
-        mel_spec = mel_spec.squeeze().numpy().flatten()
-        # convert to tensor
-        return mel_spec
 
         
 
 
 
-class FileLoader:L
+class FileLoader:
     """A utility class for loading different types of files."""
     
     def __init__(self, filepath):
-        self.filepath = Path(filepath)
+        self.filepath = os.Path(filepath)
         if not self.filepath.exists():
             raise FileNotFoundError(f"File not found: {filepath}")
         
