@@ -13,10 +13,44 @@ class GenericTokenizer(ABC):
     config: Config
 
     def encode(self):
+        """
+        Encodes the passed the argument using the selected tokenizer, returns a Tensor
+        """
         return "encoded"
     
     def decode(self):
+        """
+        Decodes the passed the tensor using the selected tokenizer, returns an instance
+        """
         return "decoded"
+
+@dataclass
+class TokenizerInterface():
+    config: Config 
+    example_data: str = ""
+    passed_tokenizer: str = Optional[None]
+    _tokenizer: GenericTokenizer = Optional[None]
+
+    def __post_init__(self):
+        _available_tokenizers = {"KMeansTokenizer" : KMeansTokenizer, "BPETokenizer": BPETokenizer}
+        
+        if self.passed_tokenizer is not None:
+            if self.passed_tokenizer in _available_tokenizers.keys():
+                self._tokenizer = _available_tokenizers[self.passed_tokenizer](self.config)
+            else:
+                raise ValueError(f"Passed tokenizer not an implemented algorithm\nChoose between {_available_tokenizers}")
+        elif self.example_data != "":
+            self._tokenizer = self._select_tokenizer(self.example_data)
+        else:
+            raise ValueError("Neither a tokenizer nor example data were provided")
+        
+    def encode(self, to_encode=None) -> torch.Tensor:
+
+        return self._tokenizer.encode(to_encode)
+    
+    def decode(self, to_decode):
+
+        return self._tokenizer.decode(to_decode)
 
 @dataclass
 class KMeansTokenizer(GenericTokenizer):
@@ -47,35 +81,3 @@ class KMeansTokenizer(GenericTokenizer):
 @dataclass
 class BPETokenizer(GenericTokenizer):
     pass
-
-@dataclass
-class TokenizerInterface():
-    config: Config 
-    example_data: str = ""
-    passed_tokenizer: str = Optional[None]
-    _tokenizer: GenericTokenizer = Optional[None]
-
-    def __post_init__(self):
-        _available_tokenizers = {"KMeansTokenizer" : KMeansTokenizer, "BPETokenizer": BPETokenizer}
-        
-        if self.passed_tokenizer is not None:
-            if self.passed_tokenizer in _available_tokenizers.keys():
-                self._tokenizer = _available_tokenizers[self.passed_tokenizer](self.config)
-            else:
-                raise ValueError(f"Passed tokenizer not an implemented algorithm\nChoose between {_available_tokenizers}")
-        elif self.example_data != "":
-            self._tokenizer = self._select_tokenizer(self.example_data)
-        else:
-            raise ValueError("Neither a tokenizer nor example data were provided")
-        
-    def encode(self, to_encode=None) -> torch.Tensor:
-        """
-        Encodes the passed the argument using the selected tokenizer, returns a Tensor
-        """
-        return self._tokenizer.encode(to_encode)
-    
-    def decode(self, to_decode):
-        """
-        Decodes the passed the tensor using the selected tokenizer, returns an instance
-        """
-        return self._tokenizer.decode(to_decode)
